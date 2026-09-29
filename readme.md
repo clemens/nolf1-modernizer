@@ -76,6 +76,29 @@ The following build configurations are setup to build:
 
 If you experience any issues, feel free to open an issue.
 
+### Building on Linux
+
+`build-linux.py` cross-compiles the same configurations (Final Release for CShell/Object, Release for the rest) with clang-cl and lld-link. It reads the source lists and settings straight from the `.vcxproj` files, so no separate project files need maintaining.
+
+Requirements: `python3`, `clang` (with `clang-cl`), `lld`, `llvm` (for `llvm-rc`/`llvm-lib`), `ninja`, and `wine` (only for packaging, to run `lithrez.exe`).
+
+1. Grab the MSVC CRT and Windows SDK headers/libs with [xwin](https://github.com/Jake-Shadle/xwin) (this accepts Microsoft's license):
+
+   ```sh
+   xwin --accept-license --arch x86 splat --output ~/.cache/xwin/splat
+   ```
+
+2. Build:
+
+   ```sh
+   ./build-linux.py            # outputs build/CShell.dll, build/Object.lto, build/CRes.dll
+   ./build-linux.py --dist     # also assembles build/dist (like the Azure pipeline), incl. Custom/Modernizer.rez
+   ```
+
+   Use `--xwin <dir>` if the splat lives elsewhere. Any other arguments are passed to ninja (e.g. `-k 0`).
+
+Copy the contents of `build/dist` into your NOLF directory, then add the rez via the launcher as described in `nolf-modernizer-readme.txt`.
+
 ## Contributing
 
 Simply fork and submit a PR (preferbly with a matching issue ticket!) 

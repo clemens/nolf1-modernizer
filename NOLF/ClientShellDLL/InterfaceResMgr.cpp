@@ -517,7 +517,8 @@ LTBOOL CInterfaceResMgr::InitFonts()
 
         // ************* Air font
 		g_pLayoutMgr->GetAirFont(g_szFontName,sizeof(g_szFontName));
-        if (!SetupFont(m_pAirFont,LTTRUE,dwFlags)) // This is actually not used?
+        // The stock font_air.pcx only works chroma-keyed; blending needs a reworked asset
+        if (!SetupFont(m_pAirFont,LTTRUE,dwFlags) && !SetupFont(m_pAirFont,LTFALSE,dwFlags))
 		{
 			debug_delete(m_pAirFont);
             m_pAirFont=LTNULL;

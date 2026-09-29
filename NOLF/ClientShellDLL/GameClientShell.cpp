@@ -1551,6 +1551,13 @@ void CGameClientShell::OnEngineTerm()
 {
     UnhookWindow();
 
+	// Remove the console detours before this dll is unloaded, the engine still prints afterwards
+	if (g_pDetourMgr)
+	{
+		delete g_pDetourMgr;
+		g_pDetourMgr = NULL;
+	}
+
 	if (m_hCamera)
 	{
         g_pLTClient->DeleteObject(m_hCamera);

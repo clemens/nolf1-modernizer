@@ -3770,7 +3770,7 @@ void CWeaponModel::ChangeAmmo(uint8 nNewAmmoId, LTBOOL bForce)
 	// Make sure this is an ammo type our current weapon can use...
 
 	if (!m_pWeapon) return;
-	for (int i=0; i < m_pWeapon->nNumAmmoTypes; i++)
+	int i; for (i =0; i < m_pWeapon->nNumAmmoTypes; i++)
 	{
 		if (nNewAmmoId == m_pWeapon->aAmmoTypes[i])
 		{

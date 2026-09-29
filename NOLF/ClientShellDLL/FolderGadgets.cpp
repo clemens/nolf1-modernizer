@@ -130,7 +130,7 @@ void	CFolderGadgets::BuildGadgetsList()
 
 	int nWID = WMGR_INVALID_ID;
     WEAPON* pGadget = LTNULL;
-	for (int i=0; i< pMission->nNumRequiredGadgets; i++)
+	int i; for (i =0; i< pMission->nNumRequiredGadgets; i++)
 	{
 		nWID = pMission->aRequiredGadgets[i];
 		pGadget = g_pWeaponMgr->GetWeapon(nWID);
@@ -515,7 +515,7 @@ void CFolderGadgets::SkipOutfitting()
 	pData->ClearGadgets();
 	int nWID = WMGR_INVALID_ID;
     WEAPON* pGadget = LTNULL;
-	for (int i=0; i< pMission->nNumRequiredGadgets; i++)
+	int i; for (i =0; i< pMission->nNumRequiredGadgets; i++)
 	{
 		nWID = pMission->aRequiredGadgets[i];
 		pGadget = g_pWeaponMgr->GetWeapon(nWID);

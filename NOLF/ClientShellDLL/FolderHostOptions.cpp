@@ -192,7 +192,7 @@ void    CFolderHostOptions::OnFocus(LTBOOL bFocus)
 	else
 	{
 		UpdateData();
-		for (int i = 0; i < g_pServerOptionMgr->GetNumOptions(); i++)
+		int i; for (i = 0; i < g_pServerOptionMgr->GetNumOptions(); i++)
 		{
 			OPTION* pOpt = g_pServerOptionMgr->GetOption(i);
 			if (IsAllowedGameType((int)pOpt->eGameType))

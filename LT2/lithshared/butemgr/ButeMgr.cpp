@@ -619,7 +619,7 @@ void CButeMgr::DisplayMessage(const char* szMsg, ...)
 	va_start(v, szMsg);
 	char aMsgBuffer[2048];
 	_vsnprintf(aMsgBuffer, sizeof(aMsgBuffer), szMsg, v);
-	m_sErrorString.Format("ButeMgr (%s, %d):  %s", m_sAttributeFilename, m_lineNumber, aMsgBuffer);
+	m_sErrorString.Format("ButeMgr (%s, %d):  %s", (LPCTSTR)m_sAttributeFilename, m_lineNumber, aMsgBuffer);
 
 #ifndef NO_TRACE
 	TRACE("%s\n", m_sErrorString.GetBuffer(0));
@@ -1161,10 +1161,8 @@ bool CButeMgr::Save(const char* szNewFileName)
 	m_pSaveData->clear();
 	if (m_bCrypt)
 	{
-		if (szNewFileName)
-			m_cryptMgr.Encrypt(*m_pSaveData, STD ofstream(szNewFileName, STD ios::binary));
-		else
-			m_cryptMgr.Encrypt(*m_pSaveData, STD ofstream(m_sAttributeFilename, STD ios::binary));
+		STD ofstream os(szNewFileName ? szNewFileName : (LPCTSTR)m_sAttributeFilename, STD ios::binary);
+		m_cryptMgr.Encrypt(*m_pSaveData, os);
 	}
 
 	delete ss.str();

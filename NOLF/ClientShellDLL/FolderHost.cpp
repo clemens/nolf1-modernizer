@@ -593,7 +593,7 @@ void CFolderHost::FillGameStruct(NetGame *pNG)
 
 	// Get each level...
 
-    for (uint8 i = 0; i < pNG->m_byNumLevels; i++)
+    uint8 i; for (i = 0; i < pNG->m_byNumLevels; i++)
 	{
 		char sLevel[256] = { "" };
 		char sLabel[32];

@@ -156,7 +156,7 @@ Tested with the Game of the Year CDs and Wine 11. The InstallShield installer an
 For holding the original's rendering against a port's, the same camera poses can be photographed in both:
 
 - `SavePose [name]` (console, `~`) appends the camera's pose to `poses.txt` in the game directory: `name world x y z pitch yaw`, world units and degrees, world like `worlds/m01s01`. Unnamed poses are `<world>_<line>`. Fly around with `mpclip` (typed into the console).
-- `+ShotPoses <file>` with `+runworld <world>` photographs the world's poses of that file and quits: `<name>.bmp` next to the file, square pixels 90 degrees across, without interface or weapon. `+ShotDelay <seconds>` (default 3) is the wait after the level starts.
+- `+ShotPoses <file>` with `+runworld <world>` photographs the world's poses of that file and quits: `<name>.bmp` next to the file, square pixels 90 degrees across, without interface, weapon or player. `+ShotDelay <seconds>` (default 3) is the wait after the level starts.
 
   ```sh
   wine lithtech.exe -rez ... +windowed 1 +BitDepth 32 +screenwidth 1024 +screenheight 768 \

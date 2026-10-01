@@ -366,6 +366,38 @@ struct ShotPose
 #define MAX_SHOT_POSES		256
 #define SHOT_POSE_DELAY		0.5f	// seconds at each pose before its shot
 
+static LTFLOAT	s_fWorldEnterTime	= 0.0f;	// game time, for +DemoQuit and +DemoShotEvery
+static int		s_nDemoShot			= 0;
+static FILE*	s_pDemoTrack		= LTNULL;	// +DemoTrack <file>, see UpdateDemoTools()
+static LTFLOAT	s_fDemoTrackTime	= -1.0f;
+
+// The +DemoTrack file, opened on first use; null without +DemoTrack...
+
+static FILE* DemoTrackFile()
+{
+	if (!s_pDemoTrack)
+	{
+		HCONSOLEVAR hVar = g_pLTClient->GetConsoleVar("DemoTrack");
+		char* pFile = hVar ? g_pLTClient->GetVarValueString(hVar) : LTNULL;
+		if (pFile && pFile[0])
+		{
+			s_pDemoTrack = fopen(pFile, "w");
+		}
+	}
+	return s_pDemoTrack;
+}
+
+// An event for the +DemoTrack file: [game time, kind, value], e.g. a command
+// going on ("on", id), off ("off", id) or a dialogue choice ("choice", n)...
+
+void DemoTrackEvent(const char* pKind, int nValue)
+{
+	FILE* pFile = DemoTrackFile();
+	if (!pFile) return;
+	fprintf(pFile, "[%.4f,\"%s\",%d]\n", g_pLTClient->GetGameTime(), pKind, nValue);
+	fflush(pFile);
+}
+
 static ShotPose	s_ShotPoses[MAX_SHOT_POSES];
 static int		s_nShotPoses	= -1;	// -1 until read for this world
 static int		s_nShot			= 0;	// the pose being photographed
@@ -1531,7 +1563,31 @@ uint32 CGameClientShell::OnEngineInitialized(RMode *pMode, LTGUID *pAppGuid)
             // g_pLTClient->RunConsoleString("+NumConsoleLines 0");
 		}
 
-        if (hVar = g_pLTClient->GetConsoleVar("runworld"))
+        HCONSOLEVAR hDemoVar = g_pLTClient->GetConsoleVar("DemoPlay");
+        char* pPlayDemo = hDemoVar ? g_pLTClient->GetVarValueString(hDemoVar) : LTNULL;
+        hDemoVar = g_pLTClient->GetConsoleVar("DemoRecord");
+        char* pRecordDemo = hDemoVar ? g_pLTClient->GetVarValueString(hDemoVar) : LTNULL;
+
+        // +DemoPlay <file> plays a demo, +DemoRecord <file> records one of +runworld,
+        // as the PlayDemo and Record console commands do...
+
+        if (pPlayDemo && pPlayDemo[0])
+		{
+            if (!DoLoadWorld("asdf", LTNULL, LTNULL, LOAD_NEW_GAME, LTNULL, pPlayDemo))
+			{
+                g_pLTClient->ShutdownWithMessage("Can't play the demo");
+				return LT_ERROR;
+			}
+		}
+        else if ((hVar = g_pLTClient->GetConsoleVar("runworld")) && pRecordDemo && pRecordDemo[0])
+		{
+            if (!DoLoadWorld(g_pLTClient->GetVarValueString(hVar), LTNULL, LTNULL, LOAD_NEW_GAME, pRecordDemo, LTNULL))
+			{
+                g_pLTClient->ShutdownWithMessage("Can't record the demo");
+				return LT_ERROR;
+			}
+		}
+        else if (hVar = g_pLTClient->GetConsoleVar("runworld"))
 		{
             if (!LoadWorld(g_pLTClient->GetVarValueString(hVar)))
 			{
@@ -1905,6 +1961,18 @@ void CGameClientShell::OnEnterWorld()
 	m_nTimeoutBugRetriesLeft = MAX_TIMEOUT_RETRIES;
 
 	s_nShotPoses = -1;
+	s_fWorldEnterTime = g_pLTClient->GetGameTime();
+	s_nDemoShot = 0;
+
+	FILE* pTrack = DemoTrackFile();
+	if (pTrack)
+	{
+		char szWorld[256];
+		GetPoseWorldName(m_strCurrentWorldName, szWorld, sizeof(szWorld));
+		fprintf(pTrack, "{\"world\":\"%s\",\"t\":%.4f}\n", szWorld, g_pLTClient->GetGameTime());
+		fflush(pTrack);
+		s_fDemoTrackTime = -1.0f;
+	}
 }
 
 
@@ -2201,6 +2269,8 @@ void CGameClientShell::UpdatePlaying()
 	// Render the camera...
 
 	RenderCamera();
+
+	UpdateDemoTools();
 
 	if (s_szShotFile[0])
 	{
@@ -4564,6 +4634,8 @@ void CGameClientShell::ProcessHandshake(HMESSAGEREAD hMessage)
 
 void CGameClientShell::OnCommandOn(int command)
 {
+	DemoTrackEvent("on", command);
+
 	// If console is active, ignore any other commands
 	if (g_pConsoleMgr->IsVisible())
 	{
@@ -4835,6 +4907,8 @@ void CGameClientShell::OnCommandOn(int command)
 
 void CGameClientShell::OnCommandOff(int command)
 {
+	DemoTrackEvent("off", command);
+
 	// Let the interface handle the command first...
 	if (m_InterfaceMgr.OnCommandOff(command))
 	{
@@ -9898,3 +9972,62 @@ const char *CGameClientShell::GetDisconnectMsg()
 }
 
 
+
+// ----------------------------------------------------------------------- //
+//
+//	ROUTINE:	CGameClientShell::UpdateDemoTools()
+//
+//	PURPOSE:	For running demos unattended: +DemoShotEvery <s> saves the
+//				frame as shown (HUD and subtitles too) every s seconds of game
+//				time in the world, demoshot_<seconds>.bmp in the game directory;
+//				+DemoQuit <s> quits after s seconds of game time in the world, so a recording ends
+//				cleanly; +DemoTrack <file> writes what the player sees and does
+//				(JSON lines), for replaying it in a port.
+//
+// ----------------------------------------------------------------------- //
+
+void CGameClientShell::UpdateDemoTools()
+{
+	LTFLOAT fTime = g_pLTClient->GetGameTime() - s_fWorldEnterTime;
+
+	LTFLOAT fEvery = GetConsoleFloat("DemoShotEvery", 0.0f);
+	if (fEvery > 0.0f && fTime >= fEvery * s_nDemoShot)
+	{
+		char szFile[64];
+		sprintf(szFile, "demoshot_%04d.bmp", (int)(fEvery * s_nDemoShot));
+		SaveScreenBmp(szFile);
+		s_nDemoShot++;
+	}
+
+	// +DemoTrack <file>: up to 60 times a second of game time, [time, "view",
+	// camera x, y, z, pitch, yaw (the player's view, degrees), cinematic camera
+	// on (0/1), player object x, y, z], LithTech units...
+
+	FILE* pTrack = DemoTrackFile();
+	LTFLOAT fGameTime = g_pLTClient->GetGameTime();
+	if (pTrack && m_hCamera && fGameTime >= s_fDemoTrackTime + 1.0f / 60.0f)
+	{
+		s_fDemoTrackTime = fGameTime;
+		LTVector vCam, vObj;
+		g_pLTClient->GetObjectPos(m_hCamera, &vCam);
+		HLOCALOBJ hObj = g_pLTClient->GetClientObject();
+		if (hObj)
+		{
+			g_pLTClient->GetObjectPos(hObj, &vObj);
+		}
+		else
+		{
+			vObj = vCam;
+		}
+		fprintf(pTrack, "[%.4f,\"view\",%.2f,%.2f,%.2f,%.3f,%.3f,%d,%.2f,%.2f,%.2f]\n", fGameTime,
+			vCam.x, vCam.y, vCam.z, RAD2DEG(m_fPitch), RAD2DEG(m_fYaw), m_bUsingExternalCamera ? 1 : 0,
+			vObj.x, vObj.y, vObj.z);
+		fflush(pTrack);
+	}
+
+	LTFLOAT fQuit = GetConsoleFloat("DemoQuit", 0.0f);
+	if (fQuit > 0.0f && fTime >= fQuit)
+	{
+		g_pLTClient->Shutdown();
+	}
+}

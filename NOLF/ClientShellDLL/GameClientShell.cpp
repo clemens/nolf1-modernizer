@@ -345,6 +345,113 @@ void CheatFn(int argc, char **argv)
 	}
 }
 
+void SavePoseFn(int argc, char **argv)
+{
+	if (g_pGameClientShell)
+	{
+		g_pGameClientShell->SavePose(argc > 0 ? argv[0] : LTNULL);
+	}
+}
+
+// Poses to photograph in the current world (+ShotPoses), see UpdateShots()...
+
+struct ShotPose
+{
+	char		szName[64];
+	LTVector	vPos;
+	LTFLOAT		fPitch;		// radians
+	LTFLOAT		fYaw;		// radians
+};
+
+#define MAX_SHOT_POSES		256
+#define SHOT_POSE_DELAY		0.5f	// seconds at each pose before its shot
+
+static ShotPose	s_ShotPoses[MAX_SHOT_POSES];
+static int		s_nShotPoses	= -1;	// -1 until read for this world
+static int		s_nShot			= 0;	// the pose being photographed
+static LTFLOAT	s_fShotTime		= 0.0f;	// when to take its shot
+static char		s_szShotFile[512];		// where this frame goes, if it's a shot
+
+static LTBOOL IsShooting()
+{
+	return s_nShot < s_nShotPoses;
+}
+
+// Writes the frame just rendered (before the flip) as a 24-bit BMP. The
+// renderer's own screenshot (F8) comes out black under Wine...
+
+static void SaveScreenBmp(const char* pFile)
+{
+	HSURFACE hScreen = g_pLTClient->GetScreenSurface();
+	uint32 nWidth, nHeight;
+	g_pLTClient->GetSurfaceDims(hScreen, &nWidth, &nHeight);
+
+	// Pixels of the screen surface are slow to read, a copy's are not...
+
+	HSURFACE hCopy = g_pLTClient->CreateSurface(nWidth, nHeight);
+	if (!hCopy) return;
+	g_pLTClient->DrawSurfaceToSurface(hCopy, hScreen, LTNULL, 0, 0);
+
+	FILE* pOut = fopen(pFile, "wb");
+	if (pOut)
+	{
+		uint32 nRow = (nWidth * 3 + 3) & ~3;
+		uint32 nSize = nRow * nHeight;
+
+		BITMAPFILEHEADER bfh = { 0 };
+		bfh.bfType = 0x4D42;
+		bfh.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
+		bfh.bfSize = bfh.bfOffBits + nSize;
+
+		BITMAPINFOHEADER bih = { 0 };
+		bih.biSize = sizeof(BITMAPINFOHEADER);
+		bih.biWidth = nWidth;
+		bih.biHeight = nHeight;		// bottom-up
+		bih.biPlanes = 1;
+		bih.biBitCount = 24;
+		bih.biSizeImage = nSize;
+
+		fwrite(&bfh, sizeof(bfh), 1, pOut);
+		fwrite(&bih, sizeof(bih), 1, pOut);
+
+		uint8* pRow = new uint8[nRow];
+		memset(pRow, 0, nRow);
+		for (int y = (int)nHeight - 1; y >= 0; y--)
+		{
+			for (uint32 x = 0; x < nWidth; x++)
+			{
+				HLTCOLOR hColor = 0;
+				g_pLTClient->GetPixel(hCopy, x, (uint32)y, &hColor);
+				pRow[x * 3]		= (uint8)GETB(hColor);
+				pRow[x * 3 + 1]	= (uint8)GETG(hColor);
+				pRow[x * 3 + 2]	= (uint8)GETR(hColor);
+			}
+			fwrite(pRow, nRow, 1, pOut);
+		}
+		delete [] pRow;
+		fclose(pOut);
+	}
+
+	g_pLTClient->DeleteSurface(hCopy);
+}
+
+// "Worlds\M01S01.dat" -> "worlds/m01s01", the world names of pose files...
+
+static void GetPoseWorldName(const char* pWorld, char* pOut, int nLen)
+{
+	int i = 0;
+	for (; pWorld[i] && i < nLen - 1; i++)
+	{
+		pOut[i] = (pWorld[i] == '\\') ? '/' : (char)tolower((unsigned char)pWorld[i]);
+	}
+	pOut[i] = 0;
+
+	if (i > 4 && !strcmp(pOut + i - 4, ".dat"))
+	{
+		pOut[i - 4] = 0;
+	}
+}
+
 void SunglassFn(int argc, char **argv)
 {
 	if (g_pInterfaceMgr)
@@ -1184,6 +1291,7 @@ uint32 CGameClientShell::OnEngineInitialized(RMode *pMode, LTGUID *pAppGuid)
 	m_HeadBobMgr.Init();
 
     g_pLTClient->RegisterConsoleProgram("Cheat", CheatFn);
+    g_pLTClient->RegisterConsoleProgram("SavePose", SavePoseFn);
     g_pLTClient->RegisterConsoleProgram("Sunglass", SunglassFn);
     g_pLTClient->RegisterConsoleProgram("LeakFile", LeakFileFn);
 //  g_pLTClient->RegisterConsoleProgram("Connect", ConnectFn);
@@ -1795,6 +1903,8 @@ void CGameClientShell::OnEnterWorld()
 
 	// Reset our retries!
 	m_nTimeoutBugRetriesLeft = MAX_TIMEOUT_RETRIES;
+
+	s_nShotPoses = -1;
 }
 
 
@@ -2083,9 +2193,21 @@ void CGameClientShell::UpdatePlaying()
 	m_InterfaceMgr.UpdateOverlays();
 
 
+	// Photograph poses if asked to (+ShotPoses)...
+
+	UpdateShots();
+
+
 	// Render the camera...
 
 	RenderCamera();
+
+	if (s_szShotFile[0])
+	{
+		SaveScreenBmp(s_szShotFile);
+		s_szShotFile[0] = 0;
+		s_nShot++;
+	}
 
 	// Update container effects...
 
@@ -6707,6 +6829,156 @@ LTBOOL CGameClientShell::EnableJoystick()
 
 // ----------------------------------------------------------------------- //
 //
+//	ROUTINE:	CGameClientShell::SavePose()
+//
+//	PURPOSE:	Append the camera's pose to poses.txt (SavePose [name]),
+//				for comparing the game's rendering with a port's: one line
+//				"name world x y z pitch yaw", angles in degrees.
+//
+// ----------------------------------------------------------------------- //
+
+void CGameClientShell::SavePose(const char* pName)
+{
+	if (!m_bInWorld || !m_hCamera) return;
+
+	char szWorld[256];
+	GetPoseWorldName(m_strCurrentWorldName, szWorld, sizeof(szWorld));
+
+	// Unnamed poses are named after the world and their line in the file...
+
+	char szName[64];
+	if (pName)
+	{
+		SAFE_STRCPY(szName, pName);
+	}
+	else
+	{
+		int nLines = 0;
+		FILE* pIn = fopen("poses.txt", "r");
+		if (pIn)
+		{
+			int c;
+			while ((c = fgetc(pIn)) != EOF)
+			{
+				if (c == '\n') nLines++;
+			}
+			fclose(pIn);
+		}
+
+		const char* pBase = strrchr(szWorld, '/');
+		sprintf(szName, "%s_%d", pBase ? pBase + 1 : szWorld, nLines + 1);
+	}
+
+	FILE* pFile = fopen("poses.txt", "a");
+	if (!pFile)
+	{
+		g_pLTClient->CPrint("Unable to write poses.txt");
+		return;
+	}
+
+	LTVector vPos;
+	g_pLTClient->GetObjectPos(m_hCamera, &vPos);
+	fprintf(pFile, "%s %s %.2f %.2f %.2f %.3f %.3f\n", szName, szWorld,
+		vPos.x, vPos.y, vPos.z, RAD2DEG(m_fPitch), RAD2DEG(m_fYaw));
+	fclose(pFile);
+
+	char szMsg[128];
+	sprintf(szMsg, "Pose %s saved", szName);
+	m_InterfaceMgr.GetMessageMgr()->AddLine(szMsg);
+}
+
+// ----------------------------------------------------------------------- //
+//
+//	ROUTINE:	CGameClientShell::UpdateShots()
+//
+//	PURPOSE:	With +ShotPoses <file>, photograph every pose of the file in
+//				the current world and quit: <name>.bmp next to the file, no
+//				interface or weapon, square pixels 90 degrees across.
+//
+// ----------------------------------------------------------------------- //
+
+void CGameClientShell::UpdateShots()
+{
+	HCONSOLEVAR hVar = g_pLTClient->GetConsoleVar("ShotPoses");
+	char* pFile = hVar ? g_pLTClient->GetVarValueString(hVar) : LTNULL;
+	if (!pFile || !pFile[0]) return;
+
+	LTFLOAT fTime = g_pLTClient->GetTime();
+
+	if (s_nShotPoses < 0)
+	{
+		char szWorld[256];
+		GetPoseWorldName(m_strCurrentWorldName, szWorld, sizeof(szWorld));
+
+		s_nShotPoses = 0;
+		FILE* pIn = fopen(pFile, "r");
+		if (pIn)
+		{
+			char szLine[512], szPoseWorld[256];
+			ShotPose pose;
+			while (s_nShotPoses < MAX_SHOT_POSES && fgets(szLine, sizeof(szLine), pIn))
+			{
+				if (sscanf(szLine, "%63s %255s %f %f %f %f %f", pose.szName, szPoseWorld,
+					&pose.vPos.x, &pose.vPos.y, &pose.vPos.z, &pose.fPitch, &pose.fYaw) == 7 &&
+					!strcmp(szPoseWorld, szWorld))
+				{
+					pose.fPitch = DEG2RAD(pose.fPitch);
+					pose.fYaw = DEG2RAD(pose.fYaw);
+					s_ShotPoses[s_nShotPoses++] = pose;
+				}
+			}
+			fclose(pIn);
+		}
+
+		// Seconds for the level to settle before the first shot (+ShotDelay)...
+
+		HCONSOLEVAR hDelay = g_pLTClient->GetConsoleVar("ShotDelay");
+		LTFLOAT fDelay = hDelay ? g_pLTClient->GetVarValueFloat(hDelay) : 3.0f;
+
+		SDL_Log("ShotPoses: %d poses for %s in %s", s_nShotPoses, szWorld, pFile);
+		s_nShot = 0;
+		s_fShotTime = fTime + fDelay;
+	}
+
+	if (s_nShot >= s_nShotPoses)
+	{
+		// Give the last shot a moment to be written...
+
+		if (fTime >= s_fShotTime)
+		{
+			g_pLTClient->Shutdown();
+		}
+		return;
+	}
+
+	m_weaponModel.SetVisible(LTFALSE);
+
+	ShotPose& pose = s_ShotPoses[s_nShot];
+
+	LTRotation rRot;
+	g_pLTClient->SetupEuler(&rRot, pose.fPitch, pose.fYaw, 0.0f);
+	g_pLTClient->SetObjectPos(m_hCamera, &pose.vPos);
+	g_pLTClient->SetObjectRotation(m_hCamera, &rRot);
+
+	uint32 nWidth, nHeight;
+	g_pLTClient->GetSurfaceDims(g_pLTClient->GetScreenSurface(), &nWidth, &nHeight);
+	SetCameraFOV(DEG2RAD(90.0f), 2.0f * (LTFLOAT)atan((double)nHeight / (double)nWidth));
+
+	// UpdatePlaying() saves this frame once it's rendered...
+
+	if (fTime >= s_fShotTime)
+	{
+		const char* pSlash = strrchr(pFile, '/');
+		if (!pSlash) pSlash = strrchr(pFile, '\\');
+		sprintf(s_szShotFile, "%.*s%s.bmp", pSlash ? (int)(pSlash - pFile + 1) : 0, pFile, pose.szName);
+
+		SDL_Log("ShotPoses: %s", s_szShotFile);
+		s_fShotTime = fTime + SHOT_POSE_DELAY;
+	}
+}
+
+// ----------------------------------------------------------------------- //
+//
 //	ROUTINE:	CGameClientShell::UpdateDebugInfo()
 //
 //	PURPOSE:	Update debugging info.
@@ -7361,7 +7633,12 @@ void CGameClientShell::RenderCamera(LTBOOL bDrawInterface)
 
 	//
 
-	m_InterfaceMgr.Draw();
+	// Shots show the world only: no HUD, letterbox or subtitles...
+
+	if (!IsShooting())
+	{
+		m_InterfaceMgr.Draw();
+	}
 
 	// Display any necessary debugging info...
 

@@ -6893,7 +6893,7 @@ void CGameClientShell::SavePose(const char* pName)
 //
 //	PURPOSE:	With +ShotPoses <file>, photograph every pose of the file in
 //				the current world and quit: <name>.bmp next to the file, no
-//				interface or weapon, square pixels 90 degrees across.
+//				interface, weapon or player, square pixels 90 degrees across.
 //
 // ----------------------------------------------------------------------- //
 
@@ -6952,6 +6952,7 @@ void CGameClientShell::UpdateShots()
 	}
 
 	m_weaponModel.SetVisible(LTFALSE);
+	ShowPlayer(LTFALSE);	// cinematics show it, and poses can stand in it
 
 	ShotPose& pose = s_ShotPoses[s_nShot];
 

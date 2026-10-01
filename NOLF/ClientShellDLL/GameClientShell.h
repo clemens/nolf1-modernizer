@@ -174,6 +174,7 @@ class CGameClientShell : public IClientShell
 		void		ToggleDebugCheat(CheatCode eCheat);
         void        ShowPlayerPos(LTBOOL bShow=LTTRUE)	{ m_bShowPlayerPos = bShow; }
         void        ShowCamPosRot(LTBOOL bShow=LTTRUE)  { m_bShowCamPosRot = bShow; }
+        void        SavePose(const char* pName);
         void        SetSpectatorMode(LTBOOL bOn=LTTRUE);
         void        SetPlayerNotInWorld()				{ m_bInWorld = LTFALSE; }
 
@@ -587,6 +588,7 @@ class CGameClientShell : public IClientShell
 		void	AdjustMenuPolygrid();
 		void	AdjustHeadBob();
 		void	UpdateDebugInfo();
+		void	UpdateShots();
 		void	HandlePlayerStateChange(HMESSAGEREAD hMessage);
 		void	HandlePlayerDamage(HMESSAGEREAD hMessage);
 		void	HandleExitLevel(HMESSAGEREAD hMessage);

@@ -369,6 +369,7 @@ struct ShotPose
 
 static LTFLOAT	s_fWorldEnterTime	= 0.0f;	// game time, for +DemoQuit and +DemoShotEvery
 static int		s_nDemoShot			= 0;
+static int		s_nDemoWorlds		= 0;	// worlds entered, +DemoShotEvery shoots the first only
 static FILE*	s_pDemoTrack		= LTNULL;	// +DemoTrack <file>, see UpdateDemoTools()
 static LTFLOAT	s_fDemoTrackTime	= -1.0f;
 
@@ -429,18 +430,19 @@ static HRESULT STDMETHODCALLTYPE CatchSurfaceLock(void* pThis, RECT* pRect, DDSU
 }
 
 // IDirectDrawSurface7's vtable, from a surface of a DirectDraw object of our
-// own; null if there's none...
+// own; null if there's none. Looked up again if ddraw.dll was loaded anew...
 
 static void** GetSurface7Vtbl()
 {
 	static void** s_pVtbl = LTNULL;
-	static LTBOOL s_bTried = LTFALSE;
-	if (s_bTried) return s_pVtbl;
-	s_bTried = LTTRUE;
+	static HMODULE s_hDDraw = LTNULL;	// the ddraw.dll s_pVtbl is in
+	HMODULE hDDraw = GetModuleHandleA("ddraw.dll");
+	if (hDDraw == s_hDDraw) return s_pVtbl;
+	s_hDDraw = hDDraw;
+	s_pVtbl = LTNULL;
 
 	static const GUID kIID_IDirectDraw7 = { 0x15e65ec0, 0x3b9c, 0x11d2, { 0xb9, 0x2f, 0x00, 0x60, 0x97, 0x97, 0xea, 0x5b } };
 	typedef HRESULT (WINAPI *CreateFn)(GUID*, LPVOID*, REFIID, IUnknown*);
-	HMODULE hDDraw = GetModuleHandleA("ddraw.dll");
 	CreateFn pCreate = hDDraw ? (CreateFn)GetProcAddress(hDDraw, "DirectDrawCreateEx") : LTNULL;
 	IDirectDraw7* pDD = LTNULL;
 	if (!pCreate || FAILED(pCreate(NULL, (LPVOID*)&pDD, kIID_IDirectDraw7, NULL))) return LTNULL;
@@ -2067,6 +2069,7 @@ void CGameClientShell::OnEnterWorld()
 	s_nShotPoses = -1;
 	s_fWorldEnterTime = g_pLTClient->GetGameTime();
 	s_nDemoShot = 0;
+	s_nDemoWorlds++;
 
 	FILE* pTrack = DemoTrackFile();
 	if (pTrack)
@@ -10083,7 +10086,8 @@ const char *CGameClientShell::GetDisconnectMsg()
 //
 //	PURPOSE:	For running demos unattended: +DemoShotEvery <s> saves the
 //				frame as shown (HUD and subtitles too) every s seconds of game
-//				time in the world, demoshot_<seconds>.bmp in the game directory;
+//				time in the first world entered (a later world's shots would
+//				get the same names), demoshot_<seconds>.bmp in the game directory;
 //				+DemoQuit <s> quits after s seconds of game time in the world, so a recording ends
 //				cleanly; +DemoTrack <file> writes what the player sees and does
 //				(JSON lines), for replaying it in a port.
@@ -10095,7 +10099,7 @@ void CGameClientShell::UpdateDemoTools()
 	LTFLOAT fTime = g_pLTClient->GetGameTime() - s_fWorldEnterTime;
 
 	LTFLOAT fEvery = GetConsoleFloat("DemoShotEvery", 0.0f);
-	if (fEvery > 0.0f && fTime >= fEvery * s_nDemoShot)
+	if (fEvery > 0.0f && s_nDemoWorlds == 1 && fTime >= fEvery * s_nDemoShot)
 	{
 		char szFile[64];
 		sprintf(szFile, "demoshot_%04d.bmp", (int)(fEvery * s_nDemoShot));

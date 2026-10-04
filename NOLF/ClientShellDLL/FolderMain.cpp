@@ -153,6 +153,8 @@ uint32 CFolderMain::OnCommand(uint32 dwCommand, uint32 dwParam1, uint32 dwParam2
 #ifdef _DEMO
 			g_pInterfaceMgr->ShowDemoScreens(LTTRUE);
 #else
+			extern void FinishDemoShot();
+			FinishDemoShot();
             g_pLTClient->Shutdown();
 #endif
 			break;

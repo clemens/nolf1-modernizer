@@ -461,6 +461,14 @@ static LTBOOL WriteScreenBmpRows(ScreenBmp &bmp, uint32 nMaxMs)
 	return LTTRUE;
 }
 
+// Writes the rest of the +DemoShotEvery shot being written, before the game
+// quits or leaves the world...
+
+void FinishDemoShot()
+{
+	WriteScreenBmpRows(s_DemoShot, 0);
+}
+
 // Starts writing the frame just rendered (before the flip) to pFile: copies the
 // screen surface, whose pixels are slow to read (a copy's are not as slow),
 // and writes the header. WriteScreenBmpRows() writes the rest...
@@ -1767,6 +1775,8 @@ uint32 CGameClientShell::OnEngineInitialized(RMode *pMode, LTGUID *pAppGuid)
 
 void CGameClientShell::OnEngineTerm()
 {
+	FinishDemoShot();
+
     UnhookWindow();
 
 	// Remove the console detours before this dll is unloaded, the engine still prints afterwards
@@ -2040,7 +2050,7 @@ void CGameClientShell::OnEnterWorld()
 
 void CGameClientShell::OnExitWorld()
 {
-	WriteScreenBmpRows(s_DemoShot, 0);
+	FinishDemoShot();
 
     g_pLTClient->PauseSounds();
 
@@ -10091,7 +10101,7 @@ void CGameClientShell::UpdateDemoTools()
 	LTFLOAT fQuit = GetConsoleFloat("DemoQuit", 0.0f);
 	if (fQuit > 0.0f && fTime >= fQuit)
 	{
-		WriteScreenBmpRows(s_DemoShot, 0);
+		FinishDemoShot();
 		g_pLTClient->Shutdown();
 	}
 }

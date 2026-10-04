@@ -35,6 +35,7 @@
 #include "AssertMgr.h"
 #include "SystemDependant.h"
 #include "SurfaceFunctions.h"
+#include <ddraw.h>
 #include "VehicleMgr.h"
 #include "BodyFX.h"
 #include "PlayerShared.h"
@@ -409,124 +410,165 @@ static LTBOOL IsShooting()
 	return s_nShot < s_nShotPoses;
 }
 
-// A frame being written as a 24-bit BMP: a copy of the screen surface taken
-// when it was rendered (before the flip), and the rows still to read from it.
-// The renderer's own screenshot (F8) comes out black under Wine...
+// The pixels of an engine surface in one lock of the DirectDraw surface behind
+// it, which a GetPixel on it locks: found by catching that Lock in the vtable
+// of IDirectDrawSurface7 for the call. GetPixel locks for every pixel, and
+// under Wine every lock waits for the render thread: 1.4 s for an 800x600
+// frame, against 2 ms for the one lock...
 
-struct ScreenBmp
+static void*	s_pLockedSurface = LTNULL;
+static HRESULT	(STDMETHODCALLTYPE *s_pSurfaceLock)(void*, RECT*, DDSURFACEDESC2*, DWORD, HANDLE) = LTNULL;
+
+#define SURFACE7_LOCK		25		// slots in IDirectDrawSurface7's vtable
+#define SURFACE7_UNLOCK		32
+
+static HRESULT STDMETHODCALLTYPE CatchSurfaceLock(void* pThis, RECT* pRect, DDSURFACEDESC2* pDesc, DWORD nFlags, HANDLE hEvent)
 {
-	HSURFACE	hCopy;		// null when none is being written
-	FILE*		pOut;
-	uint8*		pRow;
-	uint32		nWidth;
-	uint32		nRow;		// bytes per row, padded to 4
-	int			y;			// the next row to write, bottom-up
-};
+	if (!s_pLockedSurface) s_pLockedSurface = pThis;
+	return s_pSurfaceLock(pThis, pRect, pDesc, nFlags, hEvent);
+}
 
-static ScreenBmp s_DemoShot = { LTNULL, LTNULL, LTNULL, 0, 0, -1 };	// +DemoShotEvery, see UpdateDemoTools()
-#define DEMO_SHOT_MS		4		// of each frame's 16.7 at 60 fps, for writing it
+// IDirectDrawSurface7's vtable, from a surface of a DirectDraw object of our
+// own; null if there's none...
 
-// Writes rows of the frame until it's done or nMaxMs milliseconds have passed
-// (0: until it's done). Reading a pixel is an engine call of a few microseconds
-// under Wine, so a whole 800x600 frame takes over a second...
-
-static LTBOOL WriteScreenBmpRows(ScreenBmp &bmp, uint32 nMaxMs)
+static void** GetSurface7Vtbl()
 {
-	if (!bmp.hCopy) return LTTRUE;
+	static void** s_pVtbl = LTNULL;
+	static LTBOOL s_bTried = LTFALSE;
+	if (s_bTried) return s_pVtbl;
+	s_bTried = LTTRUE;
 
-	LARGE_INTEGER nFreq, nStart, nNow;
-	QueryPerformanceFrequency(&nFreq);
-	QueryPerformanceCounter(&nStart);
-	while (bmp.y >= 0)
+	static const GUID kIID_IDirectDraw7 = { 0x15e65ec0, 0x3b9c, 0x11d2, { 0xb9, 0x2f, 0x00, 0x60, 0x97, 0x97, 0xea, 0x5b } };
+	typedef HRESULT (WINAPI *CreateFn)(GUID*, LPVOID*, REFIID, IUnknown*);
+	HMODULE hDDraw = GetModuleHandleA("ddraw.dll");
+	CreateFn pCreate = hDDraw ? (CreateFn)GetProcAddress(hDDraw, "DirectDrawCreateEx") : LTNULL;
+	IDirectDraw7* pDD = LTNULL;
+	if (!pCreate || FAILED(pCreate(NULL, (LPVOID*)&pDD, kIID_IDirectDraw7, NULL))) return LTNULL;
+	pDD->SetCooperativeLevel(NULL, DDSCL_NORMAL);
+
+	DDSURFACEDESC2 desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.dwSize = sizeof(desc);
+	desc.dwFlags = DDSD_CAPS | DDSD_WIDTH | DDSD_HEIGHT;
+	desc.dwWidth = desc.dwHeight = 4;
+	desc.ddsCaps.dwCaps = DDSCAPS_OFFSCREENPLAIN | DDSCAPS_SYSTEMMEMORY;
+	IDirectDrawSurface7* pSurface = LTNULL;
+	if (SUCCEEDED(pDD->CreateSurface(&desc, &pSurface, NULL)))
 	{
-		for (uint32 x = 0; x < bmp.nWidth; x++)
-		{
-			HLTCOLOR hColor = 0;
-			g_pLTClient->GetPixel(bmp.hCopy, x, (uint32)bmp.y, &hColor);
-			bmp.pRow[x * 3]		= (uint8)GETB(hColor);
-			bmp.pRow[x * 3 + 1]	= (uint8)GETG(hColor);
-			bmp.pRow[x * 3 + 2]	= (uint8)GETR(hColor);
-		}
-		fwrite(bmp.pRow, bmp.nRow, 1, bmp.pOut);
-		bmp.y--;
-
-		QueryPerformanceCounter(&nNow);
-		if (nMaxMs && bmp.y >= 0 && (nNow.QuadPart - nStart.QuadPart) * 1000 >= nMaxMs * nFreq.QuadPart) return LTFALSE;
+		s_pVtbl = *(void***)pSurface;	// the vtable stays, it's ddraw.dll's
+		pSurface->Release();
 	}
-
-	delete [] bmp.pRow;
-	fclose(bmp.pOut);
-	g_pLTClient->DeleteSurface(bmp.hCopy);
-	bmp.hCopy = LTNULL;
-	return LTTRUE;
+	pDD->Release();
+	return s_pVtbl;
 }
 
-// Writes the rest of the +DemoShotEvery shot being written, before the game
-// quits or leaves the world...
+// Reads hSurf (nWidth x nHeight, 32-bit RGB) into pImage as bottom-up rows of
+// nRow bytes, blue, green, red; LTFALSE if it can't...
 
-void FinishDemoShot()
+static LTBOOL ReadSurfaceBgr(HSURFACE hSurf, uint32 nWidth, uint32 nHeight, uint32 nRow, uint8* pImage)
 {
-	WriteScreenBmpRows(s_DemoShot, 0);
+	void** pVtbl = GetSurface7Vtbl();
+	if (!pVtbl) return LTFALSE;
+
+	DWORD nProtect;
+	if (!VirtualProtect(&pVtbl[SURFACE7_LOCK], sizeof(void*), PAGE_READWRITE, &nProtect)) return LTFALSE;
+	*(void**)&s_pSurfaceLock = pVtbl[SURFACE7_LOCK];
+	s_pLockedSurface = LTNULL;
+	pVtbl[SURFACE7_LOCK] = (void*)CatchSurfaceLock;
+	HLTCOLOR hColor;
+	g_pLTClient->GetPixel(hSurf, 0, 0, &hColor);
+	pVtbl[SURFACE7_LOCK] = *(void**)&s_pSurfaceLock;
+	VirtualProtect(&pVtbl[SURFACE7_LOCK], sizeof(void*), nProtect, &nProtect);
+	if (!s_pLockedSurface) return LTFALSE;
+
+	void* pSurface = s_pLockedSurface;
+	void** pSurfaceVtbl = *(void***)pSurface;
+	DDSURFACEDESC2 desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.dwSize = sizeof(desc);
+	if (FAILED(s_pSurfaceLock(pSurface, NULL, &desc, DDLOCK_READONLY | DDLOCK_WAIT, NULL))) return LTFALSE;
+
+	DDPIXELFORMAT &pf = desc.ddpfPixelFormat;
+	LTBOOL bOk = desc.dwWidth == nWidth && desc.dwHeight == nHeight && pf.dwRGBBitCount == 32 &&
+		pf.dwRBitMask == 0xff0000 && pf.dwGBitMask == 0xff00 && pf.dwBBitMask == 0xff;
+	if (bOk)
+	{
+		for (uint32 y = 0; y < nHeight; y++)
+		{
+			const uint8* pSrc = (const uint8*)desc.lpSurface + y * desc.lPitch;
+			uint8* pDst = pImage + (nHeight - 1 - y) * nRow;
+			for (uint32 x = 0; x < nWidth; x++)
+			{
+				pDst[x * 3]		= pSrc[x * 4];
+				pDst[x * 3 + 1]	= pSrc[x * 4 + 1];
+				pDst[x * 3 + 2]	= pSrc[x * 4 + 2];
+			}
+		}
+	}
+	((HRESULT (STDMETHODCALLTYPE *)(void*, RECT*))pSurfaceVtbl[SURFACE7_UNLOCK])(pSurface, NULL);
+	return bOk;
 }
 
-// Starts writing the frame just rendered (before the flip) to pFile: copies the
-// screen surface, whose pixels are slow to read (a copy's are not as slow),
-// and writes the header. WriteScreenBmpRows() writes the rest...
+// Writes the frame just rendered (before the flip) as a 24-bit BMP. The
+// renderer's own screenshot (F8) comes out black under Wine...
 
-static void StartScreenBmp(ScreenBmp &bmp, const char* pFile)
+static void SaveScreenBmp(const char* pFile)
 {
-	WriteScreenBmpRows(bmp, 0);
-
 	HSURFACE hScreen = g_pLTClient->GetScreenSurface();
 	uint32 nWidth, nHeight;
 	g_pLTClient->GetSurfaceDims(hScreen, &nWidth, &nHeight);
+
+	// Pixels of the screen surface are slow to read, a copy's are not...
 
 	HSURFACE hCopy = g_pLTClient->CreateSurface(nWidth, nHeight);
 	if (!hCopy) return;
 	g_pLTClient->DrawSurfaceToSurface(hCopy, hScreen, LTNULL, 0, 0);
 
 	FILE* pOut = fopen(pFile, "wb");
-	if (!pOut)
+	if (pOut)
 	{
-		g_pLTClient->DeleteSurface(hCopy);
-		return;
+		uint32 nRow = (nWidth * 3 + 3) & ~3;
+		uint32 nSize = nRow * nHeight;
+
+		BITMAPFILEHEADER bfh = { 0 };
+		bfh.bfType = 0x4D42;
+		bfh.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
+		bfh.bfSize = bfh.bfOffBits + nSize;
+
+		BITMAPINFOHEADER bih = { 0 };
+		bih.biSize = sizeof(BITMAPINFOHEADER);
+		bih.biWidth = nWidth;
+		bih.biHeight = nHeight;		// bottom-up
+		bih.biPlanes = 1;
+		bih.biBitCount = 24;
+		bih.biSizeImage = nSize;
+
+		uint8* pImage = new uint8[nSize];
+		memset(pImage, 0, nSize);
+		if (!ReadSurfaceBgr(hCopy, nWidth, nHeight, nRow, pImage))
+		{
+			for (uint32 y = 0; y < nHeight; y++)
+			{
+				uint8* pRow = pImage + (nHeight - 1 - y) * nRow;
+				for (uint32 x = 0; x < nWidth; x++)
+				{
+					HLTCOLOR hColor = 0;
+					g_pLTClient->GetPixel(hCopy, x, y, &hColor);
+					pRow[x * 3]		= (uint8)GETB(hColor);
+					pRow[x * 3 + 1]	= (uint8)GETG(hColor);
+					pRow[x * 3 + 2]	= (uint8)GETR(hColor);
+				}
+			}
+		}
+
+		fwrite(&bfh, sizeof(bfh), 1, pOut);
+		fwrite(&bih, sizeof(bih), 1, pOut);
+		fwrite(pImage, nSize, 1, pOut);
+		delete [] pImage;
+		fclose(pOut);
 	}
 
-	uint32 nRow = (nWidth * 3 + 3) & ~3;
-	uint32 nSize = nRow * nHeight;
-
-	BITMAPFILEHEADER bfh = { 0 };
-	bfh.bfType = 0x4D42;
-	bfh.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
-	bfh.bfSize = bfh.bfOffBits + nSize;
-
-	BITMAPINFOHEADER bih = { 0 };
-	bih.biSize = sizeof(BITMAPINFOHEADER);
-	bih.biWidth = nWidth;
-	bih.biHeight = nHeight;		// bottom-up
-	bih.biPlanes = 1;
-	bih.biBitCount = 24;
-	bih.biSizeImage = nSize;
-
-	fwrite(&bfh, sizeof(bfh), 1, pOut);
-	fwrite(&bih, sizeof(bih), 1, pOut);
-
-	bmp.hCopy = hCopy;
-	bmp.pOut = pOut;
-	bmp.pRow = new uint8[nRow];
-	memset(bmp.pRow, 0, nRow);
-	bmp.nWidth = nWidth;
-	bmp.nRow = nRow;
-	bmp.y = (int)nHeight - 1;
-}
-
-// Writes the frame just rendered as a BMP, all of it now...
-
-static void SaveScreenBmp(const char* pFile)
-{
-	ScreenBmp bmp = { LTNULL, LTNULL, LTNULL, 0, 0, -1 };
-	StartScreenBmp(bmp, pFile);
-	WriteScreenBmpRows(bmp, 0);
+	g_pLTClient->DeleteSurface(hCopy);
 }
 
 // "Worlds\M01S01.dat" -> "worlds/m01s01", the world names of pose files...
@@ -1775,8 +1817,6 @@ uint32 CGameClientShell::OnEngineInitialized(RMode *pMode, LTGUID *pAppGuid)
 
 void CGameClientShell::OnEngineTerm()
 {
-	FinishDemoShot();
-
     UnhookWindow();
 
 	// Remove the console detours before this dll is unloaded, the engine still prints afterwards
@@ -2050,8 +2090,6 @@ void CGameClientShell::OnEnterWorld()
 
 void CGameClientShell::OnExitWorld()
 {
-	FinishDemoShot();
-
     g_pLTClient->PauseSounds();
 
     m_bInWorld      = LTFALSE;
@@ -10045,8 +10083,7 @@ const char *CGameClientShell::GetDisconnectMsg()
 //
 //	PURPOSE:	For running demos unattended: +DemoShotEvery <s> saves the
 //				frame as shown (HUD and subtitles too) every s seconds of game
-//				time in the world, demoshot_<seconds>.bmp in the game directory,
-//				written a few rows a frame so the game doesn't stall;
+//				time in the world, demoshot_<seconds>.bmp in the game directory;
 //				+DemoQuit <s> quits after s seconds of game time in the world, so a recording ends
 //				cleanly; +DemoTrack <file> writes what the player sees and does
 //				(JSON lines), for replaying it in a port.
@@ -10062,12 +10099,8 @@ void CGameClientShell::UpdateDemoTools()
 	{
 		char szFile[64];
 		sprintf(szFile, "demoshot_%04d.bmp", (int)(fEvery * s_nDemoShot));
-		StartScreenBmp(s_DemoShot, szFile);
+		SaveScreenBmp(szFile);
 		s_nDemoShot++;
-	}
-	else
-	{
-		WriteScreenBmpRows(s_DemoShot, DEMO_SHOT_MS);
 	}
 
 	// +DemoTrack <file>: each frame at least 15 ms of game time after the last
@@ -10101,7 +10134,6 @@ void CGameClientShell::UpdateDemoTools()
 	LTFLOAT fQuit = GetConsoleFloat("DemoQuit", 0.0f);
 	if (fQuit > 0.0f && fTime >= fQuit)
 	{
-		FinishDemoShot();
 		g_pLTClient->Shutdown();
 	}
 }

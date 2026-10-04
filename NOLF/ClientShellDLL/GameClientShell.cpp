@@ -409,62 +409,124 @@ static LTBOOL IsShooting()
 	return s_nShot < s_nShotPoses;
 }
 
-// Writes the frame just rendered (before the flip) as a 24-bit BMP. The
-// renderer's own screenshot (F8) comes out black under Wine...
+// A frame being written as a 24-bit BMP: a copy of the screen surface taken
+// when it was rendered (before the flip), and the rows still to read from it.
+// The renderer's own screenshot (F8) comes out black under Wine...
 
-static void SaveScreenBmp(const char* pFile)
+struct ScreenBmp
 {
+	HSURFACE	hCopy;		// null when none is being written
+	FILE*		pOut;
+	uint8*		pRow;
+	uint32		nWidth;
+	uint32		nRow;		// bytes per row, padded to 4
+	int			y;			// the next row to write, bottom-up
+};
+
+static ScreenBmp s_DemoShot = { LTNULL, LTNULL, LTNULL, 0, 0, -1 };	// +DemoShotEvery, see UpdateDemoTools()
+#define DEMO_SHOT_MS		4		// of each frame's 16.7 at 60 fps, for writing it
+
+// Writes rows of the frame until it's done or nMaxMs milliseconds have passed
+// (0: until it's done). Reading a pixel is an engine call of a few microseconds
+// under Wine, so a whole 800x600 frame takes over a second...
+
+static LTBOOL WriteScreenBmpRows(ScreenBmp &bmp, uint32 nMaxMs)
+{
+	if (!bmp.hCopy) return LTTRUE;
+
+	LARGE_INTEGER nFreq, nStart, nNow;
+	QueryPerformanceFrequency(&nFreq);
+	QueryPerformanceCounter(&nStart);
+	while (bmp.y >= 0)
+	{
+		for (uint32 x = 0; x < bmp.nWidth; x++)
+		{
+			HLTCOLOR hColor = 0;
+			g_pLTClient->GetPixel(bmp.hCopy, x, (uint32)bmp.y, &hColor);
+			bmp.pRow[x * 3]		= (uint8)GETB(hColor);
+			bmp.pRow[x * 3 + 1]	= (uint8)GETG(hColor);
+			bmp.pRow[x * 3 + 2]	= (uint8)GETR(hColor);
+		}
+		fwrite(bmp.pRow, bmp.nRow, 1, bmp.pOut);
+		bmp.y--;
+
+		QueryPerformanceCounter(&nNow);
+		if (nMaxMs && bmp.y >= 0 && (nNow.QuadPart - nStart.QuadPart) * 1000 >= nMaxMs * nFreq.QuadPart) return LTFALSE;
+	}
+
+	delete [] bmp.pRow;
+	fclose(bmp.pOut);
+	g_pLTClient->DeleteSurface(bmp.hCopy);
+	bmp.hCopy = LTNULL;
+	return LTTRUE;
+}
+
+// Writes the rest of the +DemoShotEvery shot being written, before the game
+// quits or leaves the world...
+
+void FinishDemoShot()
+{
+	WriteScreenBmpRows(s_DemoShot, 0);
+}
+
+// Starts writing the frame just rendered (before the flip) to pFile: copies the
+// screen surface, whose pixels are slow to read (a copy's are not as slow),
+// and writes the header. WriteScreenBmpRows() writes the rest...
+
+static void StartScreenBmp(ScreenBmp &bmp, const char* pFile)
+{
+	WriteScreenBmpRows(bmp, 0);
+
 	HSURFACE hScreen = g_pLTClient->GetScreenSurface();
 	uint32 nWidth, nHeight;
 	g_pLTClient->GetSurfaceDims(hScreen, &nWidth, &nHeight);
-
-	// Pixels of the screen surface are slow to read, a copy's are not...
 
 	HSURFACE hCopy = g_pLTClient->CreateSurface(nWidth, nHeight);
 	if (!hCopy) return;
 	g_pLTClient->DrawSurfaceToSurface(hCopy, hScreen, LTNULL, 0, 0);
 
 	FILE* pOut = fopen(pFile, "wb");
-	if (pOut)
+	if (!pOut)
 	{
-		uint32 nRow = (nWidth * 3 + 3) & ~3;
-		uint32 nSize = nRow * nHeight;
-
-		BITMAPFILEHEADER bfh = { 0 };
-		bfh.bfType = 0x4D42;
-		bfh.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
-		bfh.bfSize = bfh.bfOffBits + nSize;
-
-		BITMAPINFOHEADER bih = { 0 };
-		bih.biSize = sizeof(BITMAPINFOHEADER);
-		bih.biWidth = nWidth;
-		bih.biHeight = nHeight;		// bottom-up
-		bih.biPlanes = 1;
-		bih.biBitCount = 24;
-		bih.biSizeImage = nSize;
-
-		fwrite(&bfh, sizeof(bfh), 1, pOut);
-		fwrite(&bih, sizeof(bih), 1, pOut);
-
-		uint8* pRow = new uint8[nRow];
-		memset(pRow, 0, nRow);
-		for (int y = (int)nHeight - 1; y >= 0; y--)
-		{
-			for (uint32 x = 0; x < nWidth; x++)
-			{
-				HLTCOLOR hColor = 0;
-				g_pLTClient->GetPixel(hCopy, x, (uint32)y, &hColor);
-				pRow[x * 3]		= (uint8)GETB(hColor);
-				pRow[x * 3 + 1]	= (uint8)GETG(hColor);
-				pRow[x * 3 + 2]	= (uint8)GETR(hColor);
-			}
-			fwrite(pRow, nRow, 1, pOut);
-		}
-		delete [] pRow;
-		fclose(pOut);
+		g_pLTClient->DeleteSurface(hCopy);
+		return;
 	}
 
-	g_pLTClient->DeleteSurface(hCopy);
+	uint32 nRow = (nWidth * 3 + 3) & ~3;
+	uint32 nSize = nRow * nHeight;
+
+	BITMAPFILEHEADER bfh = { 0 };
+	bfh.bfType = 0x4D42;
+	bfh.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
+	bfh.bfSize = bfh.bfOffBits + nSize;
+
+	BITMAPINFOHEADER bih = { 0 };
+	bih.biSize = sizeof(BITMAPINFOHEADER);
+	bih.biWidth = nWidth;
+	bih.biHeight = nHeight;		// bottom-up
+	bih.biPlanes = 1;
+	bih.biBitCount = 24;
+	bih.biSizeImage = nSize;
+
+	fwrite(&bfh, sizeof(bfh), 1, pOut);
+	fwrite(&bih, sizeof(bih), 1, pOut);
+
+	bmp.hCopy = hCopy;
+	bmp.pOut = pOut;
+	bmp.pRow = new uint8[nRow];
+	memset(bmp.pRow, 0, nRow);
+	bmp.nWidth = nWidth;
+	bmp.nRow = nRow;
+	bmp.y = (int)nHeight - 1;
+}
+
+// Writes the frame just rendered as a BMP, all of it now...
+
+static void SaveScreenBmp(const char* pFile)
+{
+	ScreenBmp bmp = { LTNULL, LTNULL, LTNULL, 0, 0, -1 };
+	StartScreenBmp(bmp, pFile);
+	WriteScreenBmpRows(bmp, 0);
 }
 
 // "Worlds\M01S01.dat" -> "worlds/m01s01", the world names of pose files...
@@ -1713,6 +1775,8 @@ uint32 CGameClientShell::OnEngineInitialized(RMode *pMode, LTGUID *pAppGuid)
 
 void CGameClientShell::OnEngineTerm()
 {
+	FinishDemoShot();
+
     UnhookWindow();
 
 	// Remove the console detours before this dll is unloaded, the engine still prints afterwards
@@ -1986,6 +2050,8 @@ void CGameClientShell::OnEnterWorld()
 
 void CGameClientShell::OnExitWorld()
 {
+	FinishDemoShot();
+
     g_pLTClient->PauseSounds();
 
     m_bInWorld      = LTFALSE;
@@ -9979,7 +10045,8 @@ const char *CGameClientShell::GetDisconnectMsg()
 //
 //	PURPOSE:	For running demos unattended: +DemoShotEvery <s> saves the
 //				frame as shown (HUD and subtitles too) every s seconds of game
-//				time in the world, demoshot_<seconds>.bmp in the game directory;
+//				time in the world, demoshot_<seconds>.bmp in the game directory,
+//				written a few rows a frame so the game doesn't stall;
 //				+DemoQuit <s> quits after s seconds of game time in the world, so a recording ends
 //				cleanly; +DemoTrack <file> writes what the player sees and does
 //				(JSON lines), for replaying it in a port.
@@ -9995,17 +10062,23 @@ void CGameClientShell::UpdateDemoTools()
 	{
 		char szFile[64];
 		sprintf(szFile, "demoshot_%04d.bmp", (int)(fEvery * s_nDemoShot));
-		SaveScreenBmp(szFile);
+		StartScreenBmp(s_DemoShot, szFile);
 		s_nDemoShot++;
 	}
+	else
+	{
+		WriteScreenBmpRows(s_DemoShot, DEMO_SHOT_MS);
+	}
 
-	// +DemoTrack <file>: up to 60 times a second of game time, [time, "view",
-	// camera x, y, z, pitch, yaw (the player's view, degrees), cinematic camera
-	// on (0/1), player object x, y, z], LithTech units...
+	// +DemoTrack <file>: each frame at least 15 ms of game time after the last
+	// one written (game time counts whole milliseconds, so at 60 fps frames are
+	// 16 or 17 ms apart), [time, "view", camera x, y, z, pitch, yaw (the
+	// player's view, degrees), cinematic camera on (0/1), player object x, y,
+	// z], LithTech units...
 
 	FILE* pTrack = DemoTrackFile();
 	LTFLOAT fGameTime = g_pLTClient->GetGameTime();
-	if (pTrack && m_hCamera && fGameTime >= s_fDemoTrackTime + 1.0f / 60.0f)
+	if (pTrack && m_hCamera && fGameTime >= s_fDemoTrackTime + 0.015f)
 	{
 		s_fDemoTrackTime = fGameTime;
 		LTVector vCam, vObj;
@@ -10028,6 +10101,7 @@ void CGameClientShell::UpdateDemoTools()
 	LTFLOAT fQuit = GetConsoleFloat("DemoQuit", 0.0f);
 	if (fQuit > 0.0f && fTime >= fQuit)
 	{
+		FinishDemoShot();
 		g_pLTClient->Shutdown();
 	}
 }

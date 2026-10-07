@@ -348,6 +348,30 @@ void CheatFn(int argc, char **argv)
 	}
 }
 
+// SetPlayerPos x y z [pitch yaw]: puts the player there (LithTech units; the
+// view in degrees), as the server's force-position message does. For measuring
+// with +DemoCmds...
+
+void SetPlayerPosFn(int argc, char **argv)
+{
+	if (!g_pGameClientShell || argc < 3) return;
+	HOBJECT hObj = g_pGameClientShell->GetMoveMgr()->GetObject();
+	if (!hObj) return;
+	LTVector vPos((LTFLOAT)atof(argv[0]), (LTFLOAT)atof(argv[1]), (LTFLOAT)atof(argv[2]));
+	LTVector vDims, vPoint(0.5f, 0.5f, 0.5f), vZero(0.0f, 0.0f, 0.0f);
+	g_pPhysicsLT->GetObjectDims(hObj, &vDims);
+	g_pPhysicsLT->SetObjectDims(hObj, &vPoint, 0);
+	g_pPhysicsLT->MoveObject(hObj, &vPos, MOVEOBJECT_TELEPORT);
+	g_pPhysicsLT->SetObjectDims(hObj, &vDims, SETDIMS_PUSHOBJECTS);
+	g_pPhysicsLT->SetVelocity(hObj, &vZero);
+	g_pPhysicsLT->SetAcceleration(hObj, &vZero);
+	if (argc >= 5)
+	{
+		g_pGameClientShell->SetPitch(DEG2RAD((LTFLOAT)atof(argv[3])));
+		g_pGameClientShell->SetYaw(DEG2RAD((LTFLOAT)atof(argv[4])));
+	}
+}
+
 void SavePoseFn(int argc, char **argv)
 {
 	if (g_pGameClientShell)
@@ -376,6 +400,9 @@ static char		s_szDemoRecordPending[256] = "";	// +DemoMission: the next new game
 static LTBOOL	s_bDemoOutfit		= LTFALSE;	// +DemoMission past a mission's first world: outfit once in it (DemoOutfit)
 static FILE*	s_pDemoTrack		= LTNULL;	// +DemoTrack <file>, see UpdateDemoTools()
 static LTFLOAT	s_fDemoTrackTime	= -1.0f;
+static FILE*	s_pDemoCmds			= LTNULL;	// +DemoCmds <file>, see UpdateDemoTools()
+static LTFLOAT	s_fDemoCmdTime		= -1.0f;	// when the next line runs; -1 before it's read
+static char		s_szDemoCmd[512]	= "";
 
 // The +DemoTrack file, opened on first use; null without +DemoTrack...
 
@@ -1547,6 +1574,7 @@ uint32 CGameClientShell::OnEngineInitialized(RMode *pMode, LTGUID *pAppGuid)
 
     g_pLTClient->RegisterConsoleProgram("Cheat", CheatFn);
     g_pLTClient->RegisterConsoleProgram("SavePose", SavePoseFn);
+    g_pLTClient->RegisterConsoleProgram("SetPlayerPos", SetPlayerPosFn);
     g_pLTClient->RegisterConsoleProgram("Sunglass", SunglassFn);
     g_pLTClient->RegisterConsoleProgram("LeakFile", LeakFileFn);
 //  g_pLTClient->RegisterConsoleProgram("Connect", ConnectFn);
@@ -10336,6 +10364,38 @@ void CGameClientShell::UpdateDemoTools()
 			vCam.x, vCam.y, vCam.z, RAD2DEG(m_fPitch), RAD2DEG(m_fYaw), m_bUsingExternalCamera ? 1 : 0,
 			vObj.x, vObj.y, vObj.z);
 		fflush(pTrack);
+	}
+
+	// +DemoCmds <file>: lines "<seconds> <console string>", each run at that game
+	// time in the world, in order (Cmd, Trigger, SetPlayerPos, cheats)...
+
+	HCONSOLEVAR hCmds = g_pLTClient->GetConsoleVar("DemoCmds");
+	char* pCmds = hCmds ? g_pLTClient->GetVarValueString(hCmds) : LTNULL;
+	if (pCmds && pCmds[0] && !s_pDemoCmds && s_fDemoCmdTime < 0.0f)
+	{
+		s_pDemoCmds = fopen(pCmds, "r");
+	}
+	while (s_pDemoCmds)
+	{
+		if (s_fDemoCmdTime < 0.0f)
+		{
+			char szLine[600];
+			int nRead = 0;
+			if (!fgets(szLine, sizeof(szLine), s_pDemoCmds) || sscanf(szLine, "%f %n", &s_fDemoCmdTime, &nRead) < 1)
+			{
+				fclose(s_pDemoCmds);
+				s_pDemoCmds = LTNULL;
+				s_fDemoCmdTime = 1e9f;
+				break;
+			}
+			SAFE_STRCPY(s_szDemoCmd, szLine + nRead);
+			s_szDemoCmd[strcspn(s_szDemoCmd, "\r\n")] = 0;
+		}
+		if (fTime < s_fDemoCmdTime) break;
+		g_pLTClient->CPrint("DemoCmds %.2f: %s", fTime, s_szDemoCmd);
+		DemoTrackEvent("cmd", (int)(fTime * 1000.0f));
+		g_pLTClient->RunConsoleString(s_szDemoCmd);
+		s_fDemoCmdTime = -1.0f;
 	}
 
 	LTFLOAT fQuit = GetConsoleFloat("DemoQuit", 0.0f);

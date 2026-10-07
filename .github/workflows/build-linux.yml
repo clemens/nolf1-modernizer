@@ -14,14 +14,14 @@ on:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 15
     env:
       XWIN_VERSION: 0.10.0
     steps:
       - uses: actions/checkout@v4
 
       - name: Install clang, lld, llvm-rc, ninja and Wine
-        timeout-minutes: 10
+        timeout-minutes: 5
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
@@ -44,12 +44,14 @@ jobs:
 
       - name: Download the CRT and SDK with xwin
         if: steps.splat.outputs.cache-hit != 'true'
+        timeout-minutes: 8
         run: |
           curl -fsSL "https://github.com/Jake-Shadle/xwin/releases/download/${XWIN_VERSION}/xwin-${XWIN_VERSION}-x86_64-unknown-linux-musl.tar.gz" | tar -xz
           "./xwin-${XWIN_VERSION}-x86_64-unknown-linux-musl/xwin" --accept-license --arch x86 \
             --cache-dir "$RUNNER_TEMP/xwin-cache" splat --output ~/.cache/xwin/splat
 
       - name: Build
+        timeout-minutes: 8
         env:
           WINEDEBUG: -all
         run: ./build-linux.py --dist

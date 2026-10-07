@@ -11,7 +11,8 @@
 // ----------------------------------------------------------------------- //
 
 #include "stdafx.h"
-#include "FolderBriefing.h"
+#include "BaseFolder.h"
+#include "FolderCommands.h"
 #include "GameClientShell.h"
 #include "MsgIds.h"
 #include "CommandIds.h"
@@ -399,6 +400,18 @@ void DemoTrackEvent(const char* pKind, int nValue)
 	FILE* pFile = DemoTrackFile();
 	if (!pFile) return;
 	fprintf(pFile, "[%.4f,\"%s\",%d]\n", g_pLTClient->GetGameTime(), pKind, nValue);
+	fflush(pFile);
+}
+
+// An item the player has or gets for the +DemoTrack file: [game time, kind, name,
+// count] with a weapon, ammo (the rounds now held), mod or gear by its weapons.txt
+// name. Only in a world: the menus' mission data fills the same stats before it...
+
+void DemoTrackItem(const char* pKind, const char* pName, int nCount)
+{
+	FILE* pFile = DemoTrackFile();
+	if (!pFile || !s_nDemoWorlds) return;
+	fprintf(pFile, "[%.4f,\"%s\",\"%s\",%d]\n", g_pLTClient->GetGameTime(), pKind, pName, nCount);
 	fflush(pFile);
 }
 
@@ -1679,22 +1692,28 @@ uint32 CGameClientShell::OnEngineInitialized(RMode *pMode, LTGUID *pAppGuid)
         // +DemoPlay <file> plays a demo, +DemoRecord <file> records one of +runworld,
         // as the PlayDemo and Record console commands do...
 
-        // +DemoMission <n> with +DemoRecord: opens mission n's briefing as Select
-        // mission does; its outfitting and inventory give the mission's weapons,
-        // gear and ammo (+runworld gives none), and the first world loads
-        // recording (see DoLoadWorld)...
+        // +DemoMission <n> starts mission n with its default loadout, as the briefing's
+        // Skip outfitting and then the inventory's Continue do (CFolderObjectives and
+        // CFolderInventory::OnCommand): the mission's weapons, gadgets, mods, gear and
+        // ammo, which +runworld doesn't give. With +DemoRecord the mission's first world
+        // is recorded (see DoLoadWorld)...
 
         int nDemoMission = GetConsoleInt("DemoMission", -1);
         MISSION* pDemoMission = nDemoMission >= 0 ? g_pMissionMgr->GetMission(nDemoMission) : LTNULL;
 
-        if (pRecordDemo && pRecordDemo[0] && pDemoMission)
+        if (pDemoMission)
 		{
-			SAFE_STRCPY(s_szDemoRecordPending, pRecordDemo);
+			if (pRecordDemo && pRecordDemo[0]) SAFE_STRCPY(s_szDemoRecordPending, pRecordDemo);
 			m_InterfaceMgr.GetMissionData()->NewMission(nDemoMission);
 			m_InterfaceMgr.GetPlayerStats()->PrepareInventory();
-			CFolderBriefing* pBriefing = (CFolderBriefing*)m_InterfaceMgr.GetFolderMgr()->GetFolderFromID(FOLDER_ID_BRIEFING);
-			if (pBriefing) pBriefing->SetPostMission(LTFALSE);
-			m_InterfaceMgr.SwitchToFolder(FOLDER_ID_BRIEFING);
+			m_InterfaceMgr.GetFolderMgr()->SkipOutfitting();
+			m_InterfaceMgr.SwitchToFolder(FOLDER_ID_INVENTORY);
+			CBaseFolder* pInventory = m_InterfaceMgr.GetFolderMgr()->GetFolderFromID(FOLDER_ID_INVENTORY);
+			if (!pInventory || !pInventory->OnCommand(FOLDER_CMD_CONTINUE, 0, 0))
+			{
+                g_pLTClient->ShutdownWithMessage("Can't start the mission");
+				return LT_ERROR;
+			}
 		}
         else if (pPlayDemo && pPlayDemo[0])
 		{
@@ -2098,6 +2117,19 @@ void CGameClientShell::OnEnterWorld()
 		fprintf(pTrack, "{\"world\":\"%s\",\"t\":%.4f}\n", szWorld, g_pLTClient->GetGameTime());
 		fflush(pTrack);
 		s_fDemoTrackTime = -1.0f;
+
+		// The weapons, mods and gear the player holds as the world starts (a mission's
+		// loadout comes from its mission data, CPlayerStats::Setup); the ammo follows
+		// from the server, as "ammo" lines...
+
+		CPlayerStats* pStats = m_InterfaceMgr.GetPlayerStats();
+		int i;
+		for (i = 0; i < g_pWeaponMgr->GetNumWeapons(); i++)
+			if (pStats->HaveWeapon(i)) DemoTrackItem("weapon", g_pWeaponMgr->GetWeapon(i)->szName, 1);
+		for (i = 0; i < g_pWeaponMgr->GetNumModTypes(); i++)
+			if (pStats->HaveMod(i)) DemoTrackItem("mod", g_pWeaponMgr->GetMod(i)->szName, 1);
+		for (i = 0; i < g_pWeaponMgr->GetNumGearTypes(); i++)
+			if (pStats->HaveGear(i)) DemoTrackItem("gear", g_pWeaponMgr->GetGear(i)->szName, 1);
 	}
 }
 

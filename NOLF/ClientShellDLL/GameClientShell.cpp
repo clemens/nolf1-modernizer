@@ -11,6 +11,8 @@
 // ----------------------------------------------------------------------- //
 
 #include "stdafx.h"
+#include "BaseFolder.h"
+#include "FolderCommands.h"
 #include "GameClientShell.h"
 #include "MsgIds.h"
 #include "CommandIds.h"
@@ -35,6 +37,7 @@
 #include "AssertMgr.h"
 #include "SystemDependant.h"
 #include "SurfaceFunctions.h"
+#include <ddraw.h>
 #include "VehicleMgr.h"
 #include "BodyFX.h"
 #include "PlayerShared.h"
@@ -366,6 +369,145 @@ struct ShotPose
 #define MAX_SHOT_POSES		256
 #define SHOT_POSE_DELAY		0.5f	// seconds at each pose before its shot
 
+static LTFLOAT	s_fWorldEnterTime	= 0.0f;	// game time, for +DemoQuit and +DemoShotEvery
+static int		s_nDemoShot			= 0;
+static int		s_nDemoWorlds		= 0;	// worlds entered, +DemoShotEvery shoots the first only
+static char		s_szDemoRecordPending[256] = "";	// +DemoMission: the next new game records into it
+static LTBOOL	s_bDemoOutfit		= LTFALSE;	// +DemoMission past a mission's first world: outfit once in it (DemoOutfit)
+static FILE*	s_pDemoTrack		= LTNULL;	// +DemoTrack <file>, see UpdateDemoTools()
+static LTFLOAT	s_fDemoTrackTime	= -1.0f;
+
+// The +DemoTrack file, opened on first use; null without +DemoTrack...
+
+static FILE* DemoTrackFile()
+{
+	if (!s_pDemoTrack)
+	{
+		HCONSOLEVAR hVar = g_pLTClient->GetConsoleVar("DemoTrack");
+		char* pFile = hVar ? g_pLTClient->GetVarValueString(hVar) : LTNULL;
+		if (pFile && pFile[0])
+		{
+			s_pDemoTrack = fopen(pFile, "w");
+		}
+	}
+	return s_pDemoTrack;
+}
+
+// An event for the +DemoTrack file: [game time, kind, value], e.g. a command
+// going on ("on", id), off ("off", id) or a dialogue choice ("choice", n)...
+
+void DemoTrackEvent(const char* pKind, int nValue)
+{
+	FILE* pFile = DemoTrackFile();
+	if (!pFile) return;
+	fprintf(pFile, "[%.4f,\"%s\",%d]\n", g_pLTClient->GetGameTime(), pKind, nValue);
+	fflush(pFile);
+}
+
+// An item the player has or gets for the +DemoTrack file: [game time, kind, name,
+// count] with a weapon, ammo (the rounds now held), mod or gear by its weapons.txt
+// name. Only in a world: the menus' mission data fills the same stats before it...
+
+void DemoTrackItem(const char* pKind, const char* pName, int nCount)
+{
+	FILE* pFile = DemoTrackFile();
+	if (!pFile || !s_nDemoWorlds) return;
+	fprintf(pFile, "[%.4f,\"%s\",\"%s\",%d]\n", g_pLTClient->GetGameTime(), pKind, pName, nCount);
+	fflush(pFile);
+}
+
+// +DemoLoadout <file>: the mission data becomes the file's lines "<kind> <count> <name>"
+// (weapon, ammo, mod or gear by its weapons.txt name), e.g. what the player held at the
+// end of the world before. Without the file it stays the mission's default loadout...
+
+static LTBOOL DemoLoadoutFile(CMissionData* pData)
+{
+	HCONSOLEVAR hVar = g_pLTClient->GetConsoleVar("DemoLoadout");
+	char* pFile = hVar ? g_pLTClient->GetVarValueString(hVar) : LTNULL;
+	FILE* pIn = (pFile && pFile[0]) ? fopen(pFile, "r") : LTNULL;
+	if (!pIn) return LTFALSE;
+
+	pData->ClearWeaponsAndGadgets();
+	pData->ClearAllAmmo();
+	pData->ClearMods();
+	pData->ClearGear();
+
+	char szLine[256], szKind[16], szName[128];
+	int nCount;
+	while (fgets(szLine, sizeof(szLine), pIn))
+	{
+		if (sscanf(szLine, "%15s %d %127[^\r\n]", szKind, &nCount, szName) != 3) continue;
+
+		if (!strcmp(szKind, "weapon"))
+		{
+			WEAPON* pWeapon = g_pWeaponMgr->GetWeapon(szName);
+			if (pWeapon) pData->AddWeapon(pWeapon->nId);
+		}
+		else if (!strcmp(szKind, "ammo"))
+		{
+			AMMO* pAmmo = g_pWeaponMgr->GetAmmo(szName);
+			if (pAmmo) pData->AddAmmo(pAmmo->nId, nCount);
+		}
+		else if (!strcmp(szKind, "mod"))
+		{
+			MOD* pMod = g_pWeaponMgr->GetMod(szName);
+			if (pMod) pData->AddMod(pMod->nId);
+		}
+		else if (!strcmp(szKind, "gear"))
+		{
+			GEAR* pGear = g_pWeaponMgr->GetGear(szName);
+			if (pGear) pData->AddGear(pGear->nId);
+		}
+	}
+	fclose(pIn);
+	return LTTRUE;
+}
+
+// The weapons, mods and gear the player holds, for the +DemoTrack file...
+
+static void DemoTrackHeld()
+{
+	CPlayerStats* pStats = g_pInterfaceMgr->GetPlayerStats();
+	int i;
+	for (i = 0; i < g_pWeaponMgr->GetNumWeapons(); i++)
+		if (pStats->HaveWeapon(i)) DemoTrackItem("weapon", g_pWeaponMgr->GetWeapon(i)->szName, 1);
+	for (i = 0; i < g_pWeaponMgr->GetNumModTypes(); i++)
+		if (pStats->HaveMod(i)) DemoTrackItem("mod", g_pWeaponMgr->GetMod(i)->szName, 1);
+	for (i = 0; i < g_pWeaponMgr->GetNumGearTypes(); i++)
+		if (pStats->HaveGear(i)) DemoTrackItem("gear", g_pWeaponMgr->GetGear(i)->szName, 1);
+}
+
+// +DemoMission past a mission's first world: the loadout as the outfit cheat gives it
+// (CInterfaceMgr::DoMissionOutfitCheat), the mission data sent as a first world's, once
+// the server's default weapon has come, or after a second (CPlayerObj::Setup drops
+// every weapon, so the default loadout keeps what the player holds; a +DemoLoadout
+// file lists it). The client's stats show the mission data's weapons already...
+
+static void DemoOutfit(LTFLOAT fTime)
+{
+	CPlayerStats* pStats = g_pInterfaceMgr->GetPlayerStats();
+	CMissionData* pData = g_pInterfaceMgr->GetMissionData();
+	int i;
+	LTBOOL bServer = LTFALSE;
+	for (i = 0; i < g_pWeaponMgr->GetNumWeapons(); i++)
+		bServer = bServer || (pStats->HaveWeapon(i) && !pData->GetWeaponData(i));
+	if (!bServer && fTime < 1.0f) return;
+	s_bDemoOutfit = LTFALSE;
+
+	if (!DemoLoadoutFile(pData))
+	{
+		for (i = 0; i < g_pWeaponMgr->GetNumWeapons(); i++)
+			if (pStats->HaveWeapon(i) && !pData->GetWeaponData(i)) pData->AddWeapon(i);
+		for (i = 0; i < g_pWeaponMgr->GetNumAmmoTypes(); i++)
+			if (!pData->GetAmmoData(i)) pData->AddAmmo(i, pStats->GetAmmoCount(i));
+	}
+	int nLevel = pData->GetLevelNum();
+	pData->SetLevelNum(0);
+	g_pInterfaceMgr->SendMissionDataToServer(LTTRUE);
+	pData->SetLevelNum(nLevel);
+	DemoTrackHeld();
+}
+
 static ShotPose	s_ShotPoses[MAX_SHOT_POSES];
 static int		s_nShotPoses	= -1;	// -1 until read for this world
 static int		s_nShot			= 0;	// the pose being photographed
@@ -384,6 +526,106 @@ static WEAPON* ShotWeapon()
 	HCONSOLEVAR hVar = g_pLTClient->GetConsoleVar("ShotWeapon");
 	char* pName = hVar ? g_pLTClient->GetVarValueString(hVar) : LTNULL;
 	return pName && pName[0] ? g_pWeaponMgr->GetWeapon(pName) : LTNULL;
+}
+
+// The pixels of an engine surface in one lock of the DirectDraw surface behind
+// it, which a GetPixel on it locks: found by catching that Lock in the vtable
+// of IDirectDrawSurface7 for the call. GetPixel locks for every pixel, and
+// under Wine every lock waits for the render thread: 1.4 s for an 800x600
+// frame, against 2 ms for the one lock...
+
+static void*	s_pLockedSurface = LTNULL;
+static HRESULT	(STDMETHODCALLTYPE *s_pSurfaceLock)(void*, RECT*, DDSURFACEDESC2*, DWORD, HANDLE) = LTNULL;
+
+#define SURFACE7_LOCK		25		// slots in IDirectDrawSurface7's vtable
+#define SURFACE7_UNLOCK		32
+
+static HRESULT STDMETHODCALLTYPE CatchSurfaceLock(void* pThis, RECT* pRect, DDSURFACEDESC2* pDesc, DWORD nFlags, HANDLE hEvent)
+{
+	if (!s_pLockedSurface) s_pLockedSurface = pThis;
+	return s_pSurfaceLock(pThis, pRect, pDesc, nFlags, hEvent);
+}
+
+// IDirectDrawSurface7's vtable, from a surface of a DirectDraw object of our
+// own; null if there's none. Looked up again if ddraw.dll was loaded anew...
+
+static void** GetSurface7Vtbl()
+{
+	static void** s_pVtbl = LTNULL;
+	static HMODULE s_hDDraw = LTNULL;	// the ddraw.dll s_pVtbl is in
+	HMODULE hDDraw = GetModuleHandleA("ddraw.dll");
+	if (hDDraw == s_hDDraw) return s_pVtbl;
+	s_hDDraw = hDDraw;
+	s_pVtbl = LTNULL;
+
+	static const GUID kIID_IDirectDraw7 = { 0x15e65ec0, 0x3b9c, 0x11d2, { 0xb9, 0x2f, 0x00, 0x60, 0x97, 0x97, 0xea, 0x5b } };
+	typedef HRESULT (WINAPI *CreateFn)(GUID*, LPVOID*, REFIID, IUnknown*);
+	CreateFn pCreate = hDDraw ? (CreateFn)GetProcAddress(hDDraw, "DirectDrawCreateEx") : LTNULL;
+	IDirectDraw7* pDD = LTNULL;
+	if (!pCreate || FAILED(pCreate(NULL, (LPVOID*)&pDD, kIID_IDirectDraw7, NULL))) return LTNULL;
+	pDD->SetCooperativeLevel(NULL, DDSCL_NORMAL);
+
+	DDSURFACEDESC2 desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.dwSize = sizeof(desc);
+	desc.dwFlags = DDSD_CAPS | DDSD_WIDTH | DDSD_HEIGHT;
+	desc.dwWidth = desc.dwHeight = 4;
+	desc.ddsCaps.dwCaps = DDSCAPS_OFFSCREENPLAIN | DDSCAPS_SYSTEMMEMORY;
+	IDirectDrawSurface7* pSurface = LTNULL;
+	if (SUCCEEDED(pDD->CreateSurface(&desc, &pSurface, NULL)))
+	{
+		s_pVtbl = *(void***)pSurface;	// the vtable stays, it's ddraw.dll's
+		pSurface->Release();
+	}
+	pDD->Release();
+	return s_pVtbl;
+}
+
+// Reads hSurf (nWidth x nHeight, 32-bit RGB) into pImage as bottom-up rows of
+// nRow bytes, blue, green, red; LTFALSE if it can't...
+
+static LTBOOL ReadSurfaceBgr(HSURFACE hSurf, uint32 nWidth, uint32 nHeight, uint32 nRow, uint8* pImage)
+{
+	void** pVtbl = GetSurface7Vtbl();
+	if (!pVtbl) return LTFALSE;
+
+	DWORD nProtect;
+	if (!VirtualProtect(&pVtbl[SURFACE7_LOCK], sizeof(void*), PAGE_READWRITE, &nProtect)) return LTFALSE;
+	*(void**)&s_pSurfaceLock = pVtbl[SURFACE7_LOCK];
+	s_pLockedSurface = LTNULL;
+	pVtbl[SURFACE7_LOCK] = (void*)CatchSurfaceLock;
+	HLTCOLOR hColor;
+	g_pLTClient->GetPixel(hSurf, 0, 0, &hColor);
+	pVtbl[SURFACE7_LOCK] = *(void**)&s_pSurfaceLock;
+	VirtualProtect(&pVtbl[SURFACE7_LOCK], sizeof(void*), nProtect, &nProtect);
+	if (!s_pLockedSurface) return LTFALSE;
+
+	void* pSurface = s_pLockedSurface;
+	void** pSurfaceVtbl = *(void***)pSurface;
+	DDSURFACEDESC2 desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.dwSize = sizeof(desc);
+	if (FAILED(s_pSurfaceLock(pSurface, NULL, &desc, DDLOCK_READONLY | DDLOCK_WAIT, NULL))) return LTFALSE;
+
+	DDPIXELFORMAT &pf = desc.ddpfPixelFormat;
+	LTBOOL bOk = desc.dwWidth == nWidth && desc.dwHeight == nHeight && pf.dwRGBBitCount == 32 &&
+		pf.dwRBitMask == 0xff0000 && pf.dwGBitMask == 0xff00 && pf.dwBBitMask == 0xff;
+	if (bOk)
+	{
+		for (uint32 y = 0; y < nHeight; y++)
+		{
+			const uint8* pSrc = (const uint8*)desc.lpSurface + y * desc.lPitch;
+			uint8* pDst = pImage + (nHeight - 1 - y) * nRow;
+			for (uint32 x = 0; x < nWidth; x++)
+			{
+				pDst[x * 3]		= pSrc[x * 4];
+				pDst[x * 3 + 1]	= pSrc[x * 4 + 1];
+				pDst[x * 3 + 2]	= pSrc[x * 4 + 2];
+			}
+		}
+	}
+	((HRESULT (STDMETHODCALLTYPE *)(void*, RECT*))pSurfaceVtbl[SURFACE7_UNLOCK])(pSurface, NULL);
+	return bOk;
 }
 
 // Writes the frame just rendered (before the flip) as a 24-bit BMP. The
@@ -420,24 +662,28 @@ static void SaveScreenBmp(const char* pFile)
 		bih.biBitCount = 24;
 		bih.biSizeImage = nSize;
 
+		uint8* pImage = new uint8[nSize];
+		memset(pImage, 0, nSize);
+		if (!ReadSurfaceBgr(hCopy, nWidth, nHeight, nRow, pImage))
+		{
+			for (uint32 y = 0; y < nHeight; y++)
+			{
+				uint8* pRow = pImage + (nHeight - 1 - y) * nRow;
+				for (uint32 x = 0; x < nWidth; x++)
+				{
+					HLTCOLOR hColor = 0;
+					g_pLTClient->GetPixel(hCopy, x, y, &hColor);
+					pRow[x * 3]		= (uint8)GETB(hColor);
+					pRow[x * 3 + 1]	= (uint8)GETG(hColor);
+					pRow[x * 3 + 2]	= (uint8)GETR(hColor);
+				}
+			}
+		}
+
 		fwrite(&bfh, sizeof(bfh), 1, pOut);
 		fwrite(&bih, sizeof(bih), 1, pOut);
-
-		uint8* pRow = new uint8[nRow];
-		memset(pRow, 0, nRow);
-		for (int y = (int)nHeight - 1; y >= 0; y--)
-		{
-			for (uint32 x = 0; x < nWidth; x++)
-			{
-				HLTCOLOR hColor = 0;
-				g_pLTClient->GetPixel(hCopy, x, (uint32)y, &hColor);
-				pRow[x * 3]		= (uint8)GETB(hColor);
-				pRow[x * 3 + 1]	= (uint8)GETG(hColor);
-				pRow[x * 3 + 2]	= (uint8)GETR(hColor);
-			}
-			fwrite(pRow, nRow, 1, pOut);
-		}
-		delete [] pRow;
+		fwrite(pImage, nSize, 1, pOut);
+		delete [] pImage;
 		fclose(pOut);
 	}
 
@@ -1540,7 +1786,72 @@ uint32 CGameClientShell::OnEngineInitialized(RMode *pMode, LTGUID *pAppGuid)
             // g_pLTClient->RunConsoleString("+NumConsoleLines 0");
 		}
 
-        if (hVar = g_pLTClient->GetConsoleVar("runworld"))
+        HCONSOLEVAR hDemoVar = g_pLTClient->GetConsoleVar("DemoPlay");
+        char* pPlayDemo = hDemoVar ? g_pLTClient->GetVarValueString(hDemoVar) : LTNULL;
+        hDemoVar = g_pLTClient->GetConsoleVar("DemoRecord");
+        char* pRecordDemo = hDemoVar ? g_pLTClient->GetVarValueString(hDemoVar) : LTNULL;
+
+        // +DemoPlay <file> plays a demo, +DemoRecord <file> records one of +runworld,
+        // as the PlayDemo and Record console commands do...
+
+        // +DemoMission <n> starts mission n with its default loadout, as the briefing's
+        // Skip outfitting and then the inventory's Continue do (CFolderObjectives and
+        // CFolderInventory::OnCommand): the mission's weapons, gadgets, mods, gear and
+        // ammo, which +runworld doesn't give. With +DemoRecord the mission's first world
+        // is recorded (see DoLoadWorld). With +runworld <a later world of mission n>
+        // that world starts instead, and the loadout (or +DemoLoadout's) is given as it
+        // is entered (see DemoOutfit): the server hands a mission's loadout out in its
+        // first world only (CPlayerObj::Setup)...
+
+        int nDemoMission = GetConsoleInt("DemoMission", -1);
+        MISSION* pDemoMission = nDemoMission >= 0 ? g_pMissionMgr->GetMission(nDemoMission) : LTNULL;
+
+        // missions.txt spells its worlds with backslashes ("Worlds\m01s02"), and
+        // IsMissionLevel compares them as they are...
+
+        hVar = g_pLTClient->GetConsoleVar("runworld");
+        char szRunWorld[256] = "";
+        if (hVar) SAFE_STRCPY(szRunWorld, g_pLTClient->GetVarValueString(hVar));
+        for (char* p = szRunWorld; *p; p++) if (*p == '/') *p = '\\';
+        char* pRunWorld = szRunWorld;
+        int nRunMission = -1, nRunLevel = 0;
+        if (pDemoMission && pRunWorld[0])
+		{
+			g_pMissionMgr->IsMissionLevel(pRunWorld, nRunMission, nRunLevel);
+		}
+        s_bDemoOutfit = pDemoMission && nRunMission == nDemoMission && nRunLevel > 0;
+
+        if (pDemoMission)
+		{
+			if (pRecordDemo && pRecordDemo[0]) SAFE_STRCPY(s_szDemoRecordPending, pRecordDemo);
+			m_InterfaceMgr.GetMissionData()->NewMission(nDemoMission);
+			m_InterfaceMgr.GetPlayerStats()->PrepareInventory();
+			m_InterfaceMgr.GetFolderMgr()->SkipOutfitting();
+			m_InterfaceMgr.SwitchToFolder(FOLDER_ID_INVENTORY);
+			CBaseFolder* pInventory = m_InterfaceMgr.GetFolderMgr()->GetFolderFromID(FOLDER_ID_INVENTORY);
+			if (s_bDemoOutfit ? !LoadWorld(pRunWorld) : (!pInventory || !pInventory->OnCommand(FOLDER_CMD_CONTINUE, 0, 0)))
+			{
+                g_pLTClient->ShutdownWithMessage("Can't start the mission");
+				return LT_ERROR;
+			}
+		}
+        else if (pPlayDemo && pPlayDemo[0])
+		{
+            if (!DoLoadWorld("asdf", LTNULL, LTNULL, LOAD_NEW_GAME, LTNULL, pPlayDemo))
+			{
+                g_pLTClient->ShutdownWithMessage("Can't play the demo");
+				return LT_ERROR;
+			}
+		}
+        else if ((hVar = g_pLTClient->GetConsoleVar("runworld")) && pRecordDemo && pRecordDemo[0])
+		{
+            if (!DoLoadWorld(g_pLTClient->GetVarValueString(hVar), LTNULL, LTNULL, LOAD_NEW_GAME, pRecordDemo, LTNULL))
+			{
+                g_pLTClient->ShutdownWithMessage("Can't record the demo");
+				return LT_ERROR;
+			}
+		}
+        else if (hVar = g_pLTClient->GetConsoleVar("runworld"))
 		{
             if (!LoadWorld(g_pLTClient->GetVarValueString(hVar)))
 			{
@@ -1914,6 +2225,25 @@ void CGameClientShell::OnEnterWorld()
 	m_nTimeoutBugRetriesLeft = MAX_TIMEOUT_RETRIES;
 
 	s_nShotPoses = -1;
+	s_fWorldEnterTime = g_pLTClient->GetGameTime();
+	s_nDemoShot = 0;
+	s_nDemoWorlds++;
+
+	FILE* pTrack = DemoTrackFile();
+	if (pTrack)
+	{
+		char szWorld[256];
+		GetPoseWorldName(m_strCurrentWorldName, szWorld, sizeof(szWorld));
+		fprintf(pTrack, "{\"world\":\"%s\",\"t\":%.4f}\n", szWorld, g_pLTClient->GetGameTime());
+		fflush(pTrack);
+		s_fDemoTrackTime = -1.0f;
+
+		// The weapons, mods and gear the player holds as the world starts (a mission's
+		// loadout comes from its mission data, CPlayerStats::Setup); the ammo follows
+		// from the server, as "ammo" lines...
+
+		DemoTrackHeld();
+	}
 }
 
 
@@ -2210,6 +2540,8 @@ void CGameClientShell::UpdatePlaying()
 	// Render the camera...
 
 	RenderCamera();
+
+	UpdateDemoTools();
 
 	if (s_szShotFile[0])
 	{
@@ -4573,6 +4905,14 @@ void CGameClientShell::ProcessHandshake(HMESSAGEREAD hMessage)
 
 void CGameClientShell::OnCommandOn(int command)
 {
+	// Only commands of the game itself, not clicks and keys in menus or the console...
+
+	if ((m_InterfaceMgr.GetGameState() == GS_PLAYING || m_InterfaceMgr.GetGameState() == GS_DIALOGUE) &&
+		!g_pConsoleMgr->IsVisible())
+	{
+		DemoTrackEvent("on", command);
+	}
+
 	// If console is active, ignore any other commands
 	if (g_pConsoleMgr->IsVisible())
 	{
@@ -4844,6 +5184,8 @@ void CGameClientShell::OnCommandOn(int command)
 
 void CGameClientShell::OnCommandOff(int command)
 {
+	DemoTrackEvent("off", command);
+
 	// Let the interface handle the command first...
 	if (m_InterfaceMgr.OnCommandOff(command))
 	{
@@ -6540,6 +6882,16 @@ LTBOOL CGameClientShell::DoLoadWorld(char* pWorldFile, char* pCurWorldSaveFile,
 									char *pRecordFile, char *pPlaydemoFile)
 {
     if (!pWorldFile) return LTFALSE;
+
+	// A mission started with +DemoMission records from its first world...
+
+	char szRecord[256];
+	if (!pRecordFile && !pPlaydemoFile && s_szDemoRecordPending[0] && nFlags == LOAD_NEW_GAME)
+	{
+		SAFE_STRCPY(szRecord, s_szDemoRecordPending);
+		s_szDemoRecordPending[0] = 0;
+		pRecordFile = szRecord;
+	}
 
 
 	CMissionData* pMissionData = m_InterfaceMgr.GetMissionData();
@@ -9928,3 +10280,67 @@ const char *CGameClientShell::GetDisconnectMsg()
 }
 
 
+
+// ----------------------------------------------------------------------- //
+//
+//	ROUTINE:	CGameClientShell::UpdateDemoTools()
+//
+//	PURPOSE:	For running demos unattended: +DemoShotEvery <s> saves the
+//				frame as shown (HUD and subtitles too) every s seconds of game
+//				time in the first world entered (a later world's shots would
+//				get the same names), demoshot_<seconds>.bmp in the game directory;
+//				+DemoQuit <s> quits after s seconds of game time in the world, so a recording ends
+//				cleanly; +DemoTrack <file> writes what the player sees and does
+//				(JSON lines), for replaying it in a port.
+//
+// ----------------------------------------------------------------------- //
+
+void CGameClientShell::UpdateDemoTools()
+{
+	LTFLOAT fTime = g_pLTClient->GetGameTime() - s_fWorldEnterTime;
+
+	if (s_bDemoOutfit && s_nDemoWorlds > 0) DemoOutfit(fTime);
+
+	LTFLOAT fEvery = GetConsoleFloat("DemoShotEvery", 0.0f);
+	if (fEvery > 0.0f && s_nDemoWorlds == 1 && fTime >= fEvery * s_nDemoShot)
+	{
+		char szFile[64];
+		sprintf(szFile, "demoshot_%04d.bmp", (int)(fEvery * s_nDemoShot));
+		SaveScreenBmp(szFile);
+		s_nDemoShot++;
+	}
+
+	// +DemoTrack <file>: each frame at least 15 ms of game time after the last
+	// one written (game time counts whole milliseconds, so at 60 fps frames are
+	// 16 or 17 ms apart), [time, "view", camera x, y, z, pitch, yaw (the
+	// player's view, degrees), cinematic camera on (0/1), player object x, y,
+	// z], LithTech units...
+
+	FILE* pTrack = DemoTrackFile();
+	LTFLOAT fGameTime = g_pLTClient->GetGameTime();
+	if (pTrack && m_hCamera && fGameTime >= s_fDemoTrackTime + 0.015f)
+	{
+		s_fDemoTrackTime = fGameTime;
+		LTVector vCam, vObj;
+		g_pLTClient->GetObjectPos(m_hCamera, &vCam);
+		HLOCALOBJ hObj = g_pLTClient->GetClientObject();
+		if (hObj)
+		{
+			g_pLTClient->GetObjectPos(hObj, &vObj);
+		}
+		else
+		{
+			vObj = vCam;
+		}
+		fprintf(pTrack, "[%.4f,\"view\",%.2f,%.2f,%.2f,%.3f,%.3f,%d,%.2f,%.2f,%.2f]\n", fGameTime,
+			vCam.x, vCam.y, vCam.z, RAD2DEG(m_fPitch), RAD2DEG(m_fYaw), m_bUsingExternalCamera ? 1 : 0,
+			vObj.x, vObj.y, vObj.z);
+		fflush(pTrack);
+	}
+
+	LTFLOAT fQuit = GetConsoleFloat("DemoQuit", 0.0f);
+	if (fQuit > 0.0f && fTime >= fQuit)
+	{
+		g_pLTClient->Shutdown();
+	}
+}

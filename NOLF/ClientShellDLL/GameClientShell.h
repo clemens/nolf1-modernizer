@@ -589,6 +589,7 @@ class CGameClientShell : public IClientShell
 		void	AdjustHeadBob();
 		void	UpdateDebugInfo();
 		void	UpdateShots();
+		void	UpdateDemoTools();
 		void	HandlePlayerStateChange(HMESSAGEREAD hMessage);
 		void	HandlePlayerDamage(HMESSAGEREAD hMessage);
 		void	HandleExitLevel(HMESSAGEREAD hMessage);

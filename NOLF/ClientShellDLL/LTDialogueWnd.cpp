@@ -319,6 +319,9 @@ BOOL CLTDialogueWnd::Update(float fTimeDelta)
 			if (bySelection > m_collDialogueIDs.GetSize())
 				nDecision = m_collDialogueIDs.GetSize();
 
+			extern void DemoTrackEvent(const char* pKind, int nValue);
+			DemoTrackEvent("choice", nDecision);
+
 			DoneShowing(nDecision,m_collDialogueIDs[nDecision-1]);
             g_pLTClient->ClearInput();
 		}

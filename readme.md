@@ -151,6 +151,20 @@ Tested with the Game of the Year CDs and Wine 11. The InstallShield installer an
 
    Drop `+windowed 1` for fullscreen. Settings and saves live in the game directory (`autoexec.cfg`, `Save/`), and Modernizer writes a `Debug.log` there that's worth checking if something goes wrong.
 
+### Pose shots (comparing with a port)
+
+For holding the original's rendering against a port's, the same camera poses can be photographed in both:
+
+- `SavePose [name]` (console, `~`) appends the camera's pose to `poses.txt` in the game directory: `name world x y z pitch yaw`, world units and degrees, world like `worlds/m01s01`. Unnamed poses are `<world>_<line>`. Fly around with `mpclip` (typed into the console).
+- `+ShotPoses <file>` with `+runworld <world>` photographs the world's poses of that file and quits: `<name>.bmp` next to the file, square pixels 90 degrees across, without interface, weapon or player. `+ShotDelay <seconds>` (default 3) is the wait after the level starts. `+ShotWeapon <weapon>` (a weapons.txt name, like `P38`) keeps the player view model in the shots, with that weapon drawn (every weapon is given, as by the full weapons cheat).
+
+  ```sh
+  wine lithtech.exe -rez ... +windowed 1 +BitDepth 32 +screenwidth 1024 +screenheight 768 \
+      +runworld worlds/m01s01 +ShotPoses shots/poses.txt
+  ```
+
+The engine's own screenshot (F8, `Screenshot<n>.bmp`, base name from `SSFile`) comes out black under Wine, so the shots read the frame back through the client API. Starting a world with `+runworld` rewrites `Save/Reload.sav` and `Save/Summary.sav`; back `Save/` up first.
+
 ## Contributing
 
 Simply fork and submit a PR (preferbly with a matching issue ticket!) 

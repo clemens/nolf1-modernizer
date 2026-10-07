@@ -11,6 +11,7 @@
 // ----------------------------------------------------------------------- //
 
 #include "stdafx.h"
+#include "FolderBriefing.h"
 #include "GameClientShell.h"
 #include "MsgIds.h"
 #include "CommandIds.h"
@@ -370,6 +371,7 @@ struct ShotPose
 static LTFLOAT	s_fWorldEnterTime	= 0.0f;	// game time, for +DemoQuit and +DemoShotEvery
 static int		s_nDemoShot			= 0;
 static int		s_nDemoWorlds		= 0;	// worlds entered, +DemoShotEvery shoots the first only
+static char		s_szDemoRecordPending[256] = "";	// +DemoMission: the next new game records into it
 static FILE*	s_pDemoTrack		= LTNULL;	// +DemoTrack <file>, see UpdateDemoTools()
 static LTFLOAT	s_fDemoTrackTime	= -1.0f;
 
@@ -1677,7 +1679,24 @@ uint32 CGameClientShell::OnEngineInitialized(RMode *pMode, LTGUID *pAppGuid)
         // +DemoPlay <file> plays a demo, +DemoRecord <file> records one of +runworld,
         // as the PlayDemo and Record console commands do...
 
-        if (pPlayDemo && pPlayDemo[0])
+        // +DemoMission <n> with +DemoRecord: opens mission n's briefing as Select
+        // mission does; its outfitting and inventory give the mission's weapons,
+        // gear and ammo (+runworld gives none), and the first world loads
+        // recording (see DoLoadWorld)...
+
+        int nDemoMission = GetConsoleInt("DemoMission", -1);
+        MISSION* pDemoMission = nDemoMission >= 0 ? g_pMissionMgr->GetMission(nDemoMission) : LTNULL;
+
+        if (pRecordDemo && pRecordDemo[0] && pDemoMission)
+		{
+			SAFE_STRCPY(s_szDemoRecordPending, pRecordDemo);
+			m_InterfaceMgr.GetMissionData()->NewMission(nDemoMission);
+			m_InterfaceMgr.GetPlayerStats()->PrepareInventory();
+			CFolderBriefing* pBriefing = (CFolderBriefing*)m_InterfaceMgr.GetFolderMgr()->GetFolderFromID(FOLDER_ID_BRIEFING);
+			if (pBriefing) pBriefing->SetPostMission(LTFALSE);
+			m_InterfaceMgr.SwitchToFolder(FOLDER_ID_BRIEFING);
+		}
+        else if (pPlayDemo && pPlayDemo[0])
 		{
             if (!DoLoadWorld("asdf", LTNULL, LTNULL, LOAD_NEW_GAME, LTNULL, pPlayDemo))
 			{
@@ -4741,7 +4760,13 @@ void CGameClientShell::ProcessHandshake(HMESSAGEREAD hMessage)
 
 void CGameClientShell::OnCommandOn(int command)
 {
-	DemoTrackEvent("on", command);
+	// Only commands of the game itself, not clicks and keys in menus or the console...
+
+	if ((m_InterfaceMgr.GetGameState() == GS_PLAYING || m_InterfaceMgr.GetGameState() == GS_DIALOGUE) &&
+		!g_pConsoleMgr->IsVisible())
+	{
+		DemoTrackEvent("on", command);
+	}
 
 	// If console is active, ignore any other commands
 	if (g_pConsoleMgr->IsVisible())
@@ -6712,6 +6737,16 @@ LTBOOL CGameClientShell::DoLoadWorld(char* pWorldFile, char* pCurWorldSaveFile,
 									char *pRecordFile, char *pPlaydemoFile)
 {
     if (!pWorldFile) return LTFALSE;
+
+	// A mission started with +DemoMission records from its first world...
+
+	char szRecord[256];
+	if (!pRecordFile && !pPlaydemoFile && s_szDemoRecordPending[0] && nFlags == LOAD_NEW_GAME)
+	{
+		SAFE_STRCPY(szRecord, s_szDemoRecordPending);
+		s_szDemoRecordPending[0] = 0;
+		pRecordFile = szRecord;
+	}
 
 
 	CMissionData* pMissionData = m_InterfaceMgr.GetMissionData();

@@ -76,6 +76,81 @@ The following build configurations are setup to build:
 
 If you experience any issues, feel free to open an issue.
 
+### Building on Linux
+
+`build-linux.py` cross-compiles the same configurations (Final Release for CShell/Object, Release for the rest) with clang-cl and lld-link. It reads the source lists and settings straight from the `.vcxproj` files, so no separate project files need maintaining.
+
+Requirements: `python3`, `clang` (with `clang-cl`), `lld`, `llvm` (for `llvm-rc`/`llvm-lib`), `ninja`, and `wine` (only for packaging, to run `lithrez.exe`).
+
+1. Grab the MSVC CRT and Windows SDK headers/libs with [xwin](https://github.com/Jake-Shadle/xwin) (this accepts Microsoft's license):
+
+   ```sh
+   xwin --accept-license --arch x86 splat --output ~/.cache/xwin/splat
+   ```
+
+2. Build:
+
+   ```sh
+   ./build-linux.py            # outputs build/CShell.dll, build/Object.lto, build/CRes.dll
+   ./build-linux.py --dist     # also assembles build/dist (like the Azure pipeline), incl. Custom/Modernizer.rez
+   ```
+
+   Use `--xwin <dir>` if the splat lives elsewhere. Any other arguments are passed to ninja (e.g. `-k 0`).
+
+Copy the contents of `build/dist` into your NOLF directory, then add the rez via the launcher as described in `nolf-modernizer-readme.txt` (or see below for Wine).
+
+### Playing on Linux (Wine)
+
+Tested with the Game of the Year CDs and Wine 11. The InstallShield installer and the `NOLF.exe` launcher (which insists on disc 2 being in a CD drive) are both skipped; the files are copied by hand and the engine is started directly.
+
+1. **Get the files off the discs.** Mount the CDs, or turn BIN/CUE images into ISOs first (e.g. `bchunk "NOLF Disc 1.bin" "NOLF Disc 1.cue" disc1`), then extract them with `7z x`. Other editions may lay out their discs differently.
+
+2. **Assemble the game directory** from disc 2's `Game` folder, the `.rez` files in `Data` on both discs, and the movies, then add the Modernizer build on top:
+
+   ```sh
+   G=~/Games/nolf/NOLF
+   mkdir -p $G
+   cp -r disc2/Game/. $G/
+   cp disc1/Data/*.[rR][eE][zZ] disc2/Data/*.[rR][eE][zZ] $G/
+   cp -r disc2/Movies $G/
+   cp -r build/dist/. $G/
+   ```
+
+3. **Create a Wine prefix** and set the language key the game reads:
+
+   ```sh
+   export WINEPREFIX=~/Games/nolf/pfx
+   wineboot -i
+   wine reg add "HKLM\Software\Monolith Productions\No One Lives Forever\1.0" /v Language /d English /f /reg:32
+   ```
+
+4. **Music:** Wine's own DirectMusic doesn't play NOLF's soundtrack. Install the native DirectX 7 DirectMusic DLLs that ship on disc 2:
+
+   ```sh
+   cabextract -d dx7 disc2/DirectX7/directx.cab
+   W=$WINEPREFIX/drive_c/windows
+   for d in dmband dmcompos dmime dmloader dmstyle dmsynth dmusic; do
+       cp dx7/$d.dll $W/syswow64/
+       wine reg add 'HKCU\Software\Wine\DllOverrides' /v $d /d native /f
+       wine 'C:\windows\syswow64\regsvr32.exe' /s $d.dll
+   done
+   mkdir -p $W/syswow64/drivers && cp dx7/gm16.dls $W/syswow64/drivers/gm.dls
+   wine reg add 'HKLM\Software\Microsoft\DirectMusic' /v GMFilePath /t REG_EXPAND_SZ /d '%SystemRoot%\system32\drivers\gm.dls' /f /reg:32
+   ```
+
+   Leave `dsound` on Wine's builtin; the DX7 one needs Windows drivers. The patched `d3dim700.dll` from `BIN` is unused under Wine (its `ddraw` implements Direct3D 7 itself) and can stay.
+
+5. **Play** with the rez list the installer would have set up, plus Modernizer:
+
+   ```sh
+   cd ~/Games/nolf/NOLF
+   WINEPREFIX=~/Games/nolf/pfx wine lithtech.exe \
+       -rez NOLF.REZ -rez NOLF2.REZ -rez nolfu003.rez -rez NOLFCRES003.REZ -rez NOLFGOTY.REZ \
+       -rez Custom/Modernizer.rez +windowed 1
+   ```
+
+   Drop `+windowed 1` for fullscreen. Settings and saves live in the game directory (`autoexec.cfg`, `Save/`), and Modernizer writes a `Debug.log` there that's worth checking if something goes wrong.
+
 ## Contributing
 
 Simply fork and submit a PR (preferbly with a matching issue ticket!) 

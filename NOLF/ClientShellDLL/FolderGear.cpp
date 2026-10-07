@@ -523,7 +523,7 @@ void CFolderGear::SkipOutfitting()
 
 	int nSlotsUsed = 0;
 
-	for (int i=0; i< pMission->nNumRequiredGear; i++)
+	int i; for (i =0; i< pMission->nNumRequiredGear; i++)
 	{
 		nGID = pMission->aRequiredGear[i];
 		pGear = g_pWeaponMgr->GetGear(nGID);

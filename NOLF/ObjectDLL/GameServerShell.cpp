@@ -538,7 +538,7 @@ void CGameServerShell::SendGameDataToClient(HCLIENT hClient)
     g_pLTServer->WriteToMessageByte(hWrite, (uint8)nNumObj);
 
 	//send list of general objectives
-	for (int i = 0; i < m_Objectives[0].nNumObjectives; i++)
+	int i; for (i = 0; i < m_Objectives[0].nNumObjectives; i++)
 	{
         g_pLTServer->WriteToMessageDWord(hWrite, (uint32)m_Objectives[0].dwObjectives[i]);
 	}

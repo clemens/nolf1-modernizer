@@ -20,3 +20,5 @@ Final_Release
 UpgradeLog*.htm
 ART
 *.pdb
+# build-linux.py output
+/build/

@@ -373,6 +373,7 @@ static LTFLOAT	s_fWorldEnterTime	= 0.0f;	// game time, for +DemoQuit and +DemoSh
 static int		s_nDemoShot			= 0;
 static int		s_nDemoWorlds		= 0;	// worlds entered, +DemoShotEvery shoots the first only
 static char		s_szDemoRecordPending[256] = "";	// +DemoMission: the next new game records into it
+static LTBOOL	s_bDemoOutfit		= LTFALSE;	// +DemoMission past a mission's first world: outfit once in it (DemoOutfit)
 static FILE*	s_pDemoTrack		= LTNULL;	// +DemoTrack <file>, see UpdateDemoTools()
 static LTFLOAT	s_fDemoTrackTime	= -1.0f;
 
@@ -413,6 +414,98 @@ void DemoTrackItem(const char* pKind, const char* pName, int nCount)
 	if (!pFile || !s_nDemoWorlds) return;
 	fprintf(pFile, "[%.4f,\"%s\",\"%s\",%d]\n", g_pLTClient->GetGameTime(), pKind, pName, nCount);
 	fflush(pFile);
+}
+
+// +DemoLoadout <file>: the mission data becomes the file's lines "<kind> <count> <name>"
+// (weapon, ammo, mod or gear by its weapons.txt name), e.g. what the player held at the
+// end of the world before. Without the file it stays the mission's default loadout...
+
+static LTBOOL DemoLoadoutFile(CMissionData* pData)
+{
+	HCONSOLEVAR hVar = g_pLTClient->GetConsoleVar("DemoLoadout");
+	char* pFile = hVar ? g_pLTClient->GetVarValueString(hVar) : LTNULL;
+	FILE* pIn = (pFile && pFile[0]) ? fopen(pFile, "r") : LTNULL;
+	if (!pIn) return LTFALSE;
+
+	pData->ClearWeaponsAndGadgets();
+	pData->ClearAllAmmo();
+	pData->ClearMods();
+	pData->ClearGear();
+
+	char szLine[256], szKind[16], szName[128];
+	int nCount;
+	while (fgets(szLine, sizeof(szLine), pIn))
+	{
+		if (sscanf(szLine, "%15s %d %127[^\r\n]", szKind, &nCount, szName) != 3) continue;
+
+		if (!strcmp(szKind, "weapon"))
+		{
+			WEAPON* pWeapon = g_pWeaponMgr->GetWeapon(szName);
+			if (pWeapon) pData->AddWeapon(pWeapon->nId);
+		}
+		else if (!strcmp(szKind, "ammo"))
+		{
+			AMMO* pAmmo = g_pWeaponMgr->GetAmmo(szName);
+			if (pAmmo) pData->AddAmmo(pAmmo->nId, nCount);
+		}
+		else if (!strcmp(szKind, "mod"))
+		{
+			MOD* pMod = g_pWeaponMgr->GetMod(szName);
+			if (pMod) pData->AddMod(pMod->nId);
+		}
+		else if (!strcmp(szKind, "gear"))
+		{
+			GEAR* pGear = g_pWeaponMgr->GetGear(szName);
+			if (pGear) pData->AddGear(pGear->nId);
+		}
+	}
+	fclose(pIn);
+	return LTTRUE;
+}
+
+// The weapons, mods and gear the player holds, for the +DemoTrack file...
+
+static void DemoTrackHeld()
+{
+	CPlayerStats* pStats = g_pInterfaceMgr->GetPlayerStats();
+	int i;
+	for (i = 0; i < g_pWeaponMgr->GetNumWeapons(); i++)
+		if (pStats->HaveWeapon(i)) DemoTrackItem("weapon", g_pWeaponMgr->GetWeapon(i)->szName, 1);
+	for (i = 0; i < g_pWeaponMgr->GetNumModTypes(); i++)
+		if (pStats->HaveMod(i)) DemoTrackItem("mod", g_pWeaponMgr->GetMod(i)->szName, 1);
+	for (i = 0; i < g_pWeaponMgr->GetNumGearTypes(); i++)
+		if (pStats->HaveGear(i)) DemoTrackItem("gear", g_pWeaponMgr->GetGear(i)->szName, 1);
+}
+
+// +DemoMission past a mission's first world: the loadout as the outfit cheat gives it
+// (CInterfaceMgr::DoMissionOutfitCheat), the mission data sent as a first world's, once
+// the server's default weapon has come, or after a second (CPlayerObj::Setup drops
+// every weapon, so the default loadout keeps what the player holds; a +DemoLoadout
+// file lists it). The client's stats show the mission data's weapons already...
+
+static void DemoOutfit(LTFLOAT fTime)
+{
+	CPlayerStats* pStats = g_pInterfaceMgr->GetPlayerStats();
+	CMissionData* pData = g_pInterfaceMgr->GetMissionData();
+	int i;
+	LTBOOL bServer = LTFALSE;
+	for (i = 0; i < g_pWeaponMgr->GetNumWeapons(); i++)
+		bServer = bServer || (pStats->HaveWeapon(i) && !pData->GetWeaponData(i));
+	if (!bServer && fTime < 1.0f) return;
+	s_bDemoOutfit = LTFALSE;
+
+	if (!DemoLoadoutFile(pData))
+	{
+		for (i = 0; i < g_pWeaponMgr->GetNumWeapons(); i++)
+			if (pStats->HaveWeapon(i) && !pData->GetWeaponData(i)) pData->AddWeapon(i);
+		for (i = 0; i < g_pWeaponMgr->GetNumAmmoTypes(); i++)
+			if (!pData->GetAmmoData(i)) pData->AddAmmo(i, pStats->GetAmmoCount(i));
+	}
+	int nLevel = pData->GetLevelNum();
+	pData->SetLevelNum(0);
+	g_pInterfaceMgr->SendMissionDataToServer(LTTRUE);
+	pData->SetLevelNum(nLevel);
+	DemoTrackHeld();
 }
 
 static ShotPose	s_ShotPoses[MAX_SHOT_POSES];
@@ -1696,10 +1789,28 @@ uint32 CGameClientShell::OnEngineInitialized(RMode *pMode, LTGUID *pAppGuid)
         // Skip outfitting and then the inventory's Continue do (CFolderObjectives and
         // CFolderInventory::OnCommand): the mission's weapons, gadgets, mods, gear and
         // ammo, which +runworld doesn't give. With +DemoRecord the mission's first world
-        // is recorded (see DoLoadWorld)...
+        // is recorded (see DoLoadWorld). With +runworld <a later world of mission n>
+        // that world starts instead, and the loadout (or +DemoLoadout's) is given as it
+        // is entered (see DemoOutfit): the server hands a mission's loadout out in its
+        // first world only (CPlayerObj::Setup)...
 
         int nDemoMission = GetConsoleInt("DemoMission", -1);
         MISSION* pDemoMission = nDemoMission >= 0 ? g_pMissionMgr->GetMission(nDemoMission) : LTNULL;
+
+        // missions.txt spells its worlds with backslashes ("Worlds\m01s02"), and
+        // IsMissionLevel compares them as they are...
+
+        hVar = g_pLTClient->GetConsoleVar("runworld");
+        char szRunWorld[256] = "";
+        if (hVar) SAFE_STRCPY(szRunWorld, g_pLTClient->GetVarValueString(hVar));
+        for (char* p = szRunWorld; *p; p++) if (*p == '/') *p = '\\';
+        char* pRunWorld = szRunWorld;
+        int nRunMission = -1, nRunLevel = 0;
+        if (pDemoMission && pRunWorld[0])
+		{
+			g_pMissionMgr->IsMissionLevel(pRunWorld, nRunMission, nRunLevel);
+		}
+        s_bDemoOutfit = pDemoMission && nRunMission == nDemoMission && nRunLevel > 0;
 
         if (pDemoMission)
 		{
@@ -1709,7 +1820,7 @@ uint32 CGameClientShell::OnEngineInitialized(RMode *pMode, LTGUID *pAppGuid)
 			m_InterfaceMgr.GetFolderMgr()->SkipOutfitting();
 			m_InterfaceMgr.SwitchToFolder(FOLDER_ID_INVENTORY);
 			CBaseFolder* pInventory = m_InterfaceMgr.GetFolderMgr()->GetFolderFromID(FOLDER_ID_INVENTORY);
-			if (!pInventory || !pInventory->OnCommand(FOLDER_CMD_CONTINUE, 0, 0))
+			if (s_bDemoOutfit ? !LoadWorld(pRunWorld) : (!pInventory || !pInventory->OnCommand(FOLDER_CMD_CONTINUE, 0, 0)))
 			{
                 g_pLTClient->ShutdownWithMessage("Can't start the mission");
 				return LT_ERROR;
@@ -2122,14 +2233,7 @@ void CGameClientShell::OnEnterWorld()
 		// loadout comes from its mission data, CPlayerStats::Setup); the ammo follows
 		// from the server, as "ammo" lines...
 
-		CPlayerStats* pStats = m_InterfaceMgr.GetPlayerStats();
-		int i;
-		for (i = 0; i < g_pWeaponMgr->GetNumWeapons(); i++)
-			if (pStats->HaveWeapon(i)) DemoTrackItem("weapon", g_pWeaponMgr->GetWeapon(i)->szName, 1);
-		for (i = 0; i < g_pWeaponMgr->GetNumModTypes(); i++)
-			if (pStats->HaveMod(i)) DemoTrackItem("mod", g_pWeaponMgr->GetMod(i)->szName, 1);
-		for (i = 0; i < g_pWeaponMgr->GetNumGearTypes(); i++)
-			if (pStats->HaveGear(i)) DemoTrackItem("gear", g_pWeaponMgr->GetGear(i)->szName, 1);
+		DemoTrackHeld();
 	}
 }
 
@@ -10164,6 +10268,8 @@ const char *CGameClientShell::GetDisconnectMsg()
 void CGameClientShell::UpdateDemoTools()
 {
 	LTFLOAT fTime = g_pLTClient->GetGameTime() - s_fWorldEnterTime;
+
+	if (s_bDemoOutfit && s_nDemoWorlds > 0) DemoOutfit(fTime);
 
 	LTFLOAT fEvery = GetConsoleFloat("DemoShotEvery", 0.0f);
 	if (fEvery > 0.0f && s_nDemoWorlds == 1 && fTime >= fEvery * s_nDemoShot)

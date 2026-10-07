@@ -519,6 +519,15 @@ static LTBOOL IsShooting()
 	return s_nShot < s_nShotPoses;
 }
 
+// The weapon to keep in the shots (+ShotWeapon <name>), or null...
+
+static WEAPON* ShotWeapon()
+{
+	HCONSOLEVAR hVar = g_pLTClient->GetConsoleVar("ShotWeapon");
+	char* pName = hVar ? g_pLTClient->GetVarValueString(hVar) : LTNULL;
+	return pName && pName[0] ? g_pWeaponMgr->GetWeapon(pName) : LTNULL;
+}
+
 // The pixels of an engine surface in one lock of the DirectDraw surface behind
 // it, which a GetPixel on it locks: found by catching that Lock in the vtable
 // of IDirectDrawSurface7 for the call. GetPixel locks for every pixel, and
@@ -7246,6 +7255,9 @@ void CGameClientShell::SavePose(const char* pName)
 //	PURPOSE:	With +ShotPoses <file>, photograph every pose of the file in
 //				the current world and quit: <name>.bmp next to the file, no
 //				interface, weapon or player, square pixels 90 degrees across.
+//				+ShotWeapon <weapon> (weapons.txt Name, e.g. P38) keeps the
+//				player view model in, with that weapon drawn: every weapon is
+//				given as by the full weapons cheat.
 //
 // ----------------------------------------------------------------------- //
 
@@ -7288,6 +7300,14 @@ void CGameClientShell::UpdateShots()
 		LTFLOAT fDelay = hDelay ? g_pLTClient->GetVarValueFloat(hDelay) : 3.0f;
 
 		SDL_Log("ShotPoses: %d poses for %s in %s", s_nShotPoses, szWorld, pFile);
+
+		if (ShotWeapon())
+		{
+			HMESSAGEWRITE hMsg = g_pLTClient->StartMessage(MID_PLAYER_CHEAT);
+			g_pLTClient->WriteToMessageByte(hMsg, (uint8)CHEAT_FULL_WEAPONS);
+			g_pLTClient->WriteToMessageByte(hMsg, LTTRUE);
+			g_pLTClient->EndMessage(hMsg);
+		}
 		s_nShot = 0;
 		s_fShotTime = fTime + fDelay;
 	}
@@ -7303,7 +7323,17 @@ void CGameClientShell::UpdateShots()
 		return;
 	}
 
-	m_weaponModel.SetVisible(LTFALSE);
+	WEAPON* pShotWeapon = ShotWeapon();
+	if (pShotWeapon)
+	{
+		// Drawn once the server has given it, without the deselect animation...
+
+		m_weaponModel.ChangeWeapon(g_pWeaponMgr->GetCommandId(pShotWeapon->nId), LTFALSE);
+	}
+	else
+	{
+		m_weaponModel.SetVisible(LTFALSE);
+	}
 	ShowPlayer(LTFALSE);	// cinematics show it, and poses can stand in it
 
 	ShotPose& pose = s_ShotPoses[s_nShot];

@@ -24,10 +24,8 @@ jobs:
           sudo dpkg --add-architecture i386
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends clang lld llvm ninja-build wine wine32:i386
-          # llvm-rc comes versioned (llvm-rc-18); put the plain name on PATH
-          if ! command -v llvm-rc >/dev/null; then
-            sudo ln -s "$(ls /usr/bin/llvm-rc-* | head -1)" /usr/local/bin/llvm-rc
-          fi
+          # clang-cl, lld-link, llvm-rc and llvm-lib only have unversioned names in the LLVM bin directory
+          ls -d /usr/lib/llvm-*/bin | tail -1 >> "$GITHUB_PATH"
 
       - name: Cache the MSVC CRT and Windows SDK (xwin splat)
         id: splat

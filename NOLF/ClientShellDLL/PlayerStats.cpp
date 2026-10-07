@@ -828,6 +828,10 @@ void CPlayerStats::UpdateHealth(uint32 nHealth)
 {
 	if (m_nHealth == nHealth) return;
 
+	// +DemoTrack: [game time, "health", value] on every change, for measuring damage.
+	extern void DemoTrackEvent(const char* pKind, int nValue);
+	DemoTrackEvent("health", (int)nHealth);
+
 	// update the member variable
 
 	if (nHealth < m_nHealth)
@@ -854,6 +858,10 @@ void CPlayerStats::UpdateHealth(uint32 nHealth)
 void CPlayerStats::UpdateArmor(uint32 nArmor)
 {
 	if (m_nArmor == nArmor) return;
+
+	// +DemoTrack: [game time, "armor", value] on every change.
+	extern void DemoTrackEvent(const char* pKind, int nValue);
+	DemoTrackEvent("armor", (int)nArmor);
 
 	if (nArmor > m_nMaxArmor)
 		nArmor = m_nMaxArmor;

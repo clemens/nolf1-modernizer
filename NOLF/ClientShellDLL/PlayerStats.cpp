@@ -25,6 +25,9 @@
 #include "SurfaceFunctions.h"
 #include "CharacterFX.h"
 
+// +DemoTrack: [game time, kind, name, count] for each weapon, ammo count, mod and gear the player gets.
+extern void DemoTrackItem(const char* pKind, const char* pName, int nCount);
+
 extern CGameClientShell* g_pGameClientShell;
 extern VarTrack g_vtShowFPS;
 
@@ -938,6 +941,11 @@ void CPlayerStats::UpdateAmmo(uint8 nWeaponId, uint8 nAmmoId,
 				g_pGameClientShell->HandleWeaponPickup(nWeaponId);
 			}
 
+			if (!m_pbHaveWeapon[nWeaponId])
+			{
+				DemoTrackItem("weapon", g_pWeaponMgr->GetWeapon(nWeaponId)->szName, 1);
+			}
+
             m_pbHaveWeapon[nWeaponId] = LTTRUE;
 			if (m_pbCanUseWeapon && pMission && !pMission->IsOneTimeWeapon(nWeaponId) && !pMission->IsOneTimeGadget(nWeaponId))
                 m_pbCanUseWeapon[nWeaponId] = LTTRUE;
@@ -1061,6 +1069,8 @@ void CPlayerStats::UpdateAmmo(uint8 nWeaponId, uint8 nAmmoId,
 
 			if (taken != 0)
 			{
+				DemoTrackItem("ammo", pAmmo->szName, (int)nAmmo);
+
 				if (bPickedup && bDisplayMsg)
 				{
 					g_pGameClientShell->HandleAmmoPickup(nAmmoId,taken);
@@ -1138,6 +1148,10 @@ void CPlayerStats::UpdateGear(uint8 nGearId)
         LTBOOL bHadAirSupply = HaveAirSupply();
 		if (m_pbHaveGear)
 		{
+			if (!m_pbHaveGear[nGearId])
+			{
+				DemoTrackItem("gear", g_pWeaponMgr->GetGear(nGearId)->szName, 1);
+			}
             m_pbHaveGear[nGearId] = LTTRUE;
 			if (m_pbCanUseGear && pMission && !pMission->IsOneTimeGear(nGearId))
 			{
@@ -1169,6 +1183,7 @@ void CPlayerStats::UpdateMod(uint8 nModId)
 		{
 			if (!m_pbHaveMod[nModId])
 			{
+				DemoTrackItem("mod", g_pWeaponMgr->GetMod(nModId)->szName, 1);
 				m_pbHaveMod[nModId] = LTTRUE;
 				m_pbCanUseMod[nModId] = LTTRUE;
 

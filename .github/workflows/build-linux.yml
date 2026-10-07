@@ -21,11 +21,14 @@ jobs:
 
       - name: Install clang, lld, llvm-rc, ninja and Wine
         run: |
+          # the CRT from xwin wants clang 19 or newer; Ubuntu 24.04 ships 18, so take 20 from apt.llvm.org
+          wget -q https://apt.llvm.org/llvm.sh
+          sudo bash llvm.sh 20
           sudo dpkg --add-architecture i386
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang lld llvm ninja-build wine wine32:i386
+          sudo apt-get install -y --no-install-recommends lld-20 llvm-20 ninja-build wine wine32:i386
           # clang-cl, lld-link, llvm-rc and llvm-lib only have unversioned names in the LLVM bin directory
-          ls -d /usr/lib/llvm-*/bin | tail -1 >> "$GITHUB_PATH"
+          echo /usr/lib/llvm-20/bin >> "$GITHUB_PATH"
 
       - name: Cache the MSVC CRT and Windows SDK (xwin splat)
         id: splat

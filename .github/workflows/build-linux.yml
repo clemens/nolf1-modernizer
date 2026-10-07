@@ -1,0 +1,52 @@
+# Builds the Modernizer with build-linux.py (clang-cl + lld-link + xwin) and
+# assembles build/dist, MODERNIZER.REZ included (lithrez.exe runs under Wine).
+# A Markdown-only change builds nothing.
+name: build-linux
+
+on:
+  pull_request:
+    branches: [master]
+    paths-ignore: ['**.md']
+  push:
+    branches: [master]
+    paths-ignore: ['**.md']
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    env:
+      XWIN_VERSION: 0.10.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang, lld, llvm-rc, ninja and Wine
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang lld llvm ninja-build wine wine32:i386
+          # llvm-rc comes versioned (llvm-rc-18); put the plain name on PATH
+          if ! command -v llvm-rc >/dev/null; then
+            sudo ln -s "$(ls /usr/bin/llvm-rc-* | head -1)" /usr/local/bin/llvm-rc
+          fi
+
+      - name: Cache the MSVC CRT and Windows SDK (xwin splat)
+        id: splat
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/xwin/splat
+          key: xwin-${{ env.XWIN_VERSION }}-x86-splat
+
+      - name: Download the CRT and SDK with xwin
+        if: steps.splat.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL "https://github.com/Jake-Shadle/xwin/releases/download/${XWIN_VERSION}/xwin-${XWIN_VERSION}-x86_64-unknown-linux-musl.tar.gz" | tar -xz
+          "./xwin-${XWIN_VERSION}-x86_64-unknown-linux-musl/xwin" --accept-license --arch x86 \
+            --cache-dir "$RUNNER_TEMP/xwin-cache" splat --output ~/.cache/xwin/splat
+
+      - name: Build
+        env:
+          WINEDEBUG: -all
+        run: ./build-linux.py --dist
+
+      - name: MODERNIZER.REZ exists
+        run: ls -l build/dist/Custom/MODERNIZER.REZ

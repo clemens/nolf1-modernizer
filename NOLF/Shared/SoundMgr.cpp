@@ -177,12 +177,11 @@ uint32 CGameSoundMgr::GetSoundIdFromFilename(const char* pSoundFile)
 
 	if (pStr && strstr(pStr, ".wav"))
 	{
-		int nStrLen = strlen(pStr);
+		// atol stops at the extension. (A copy without its terminator
+		// read whatever followed on the stack: "10001.wav" could come
+		// out as 100019, and dialogue then showed no subtitle.)
 
-		char buf[255];
-		strncpy(buf, pStr, nStrLen - 4);
-
-		nId = atol(buf);
+		nId = atol(pStr);
 	}
 
 	return nId;

@@ -7282,10 +7282,12 @@ void CGameClientShell::SavePose(const char* pName)
 //
 //	PURPOSE:	With +ShotPoses <file>, photograph every pose of the file in
 //				the current world and quit: <name>.bmp next to the file, no
-//				interface, weapon or player, square pixels 90 degrees across.
+//				interface, weapon or player, square pixels 90 degrees across a
+//				4:3 screen (wider across on a wider one, as the game's view).
 //				+ShotWeapon <weapon> (weapons.txt Name, e.g. P38) keeps the
 //				player view model in, with that weapon drawn: every weapon is
-//				given as by the full weapons cheat.
+//				given as by the full weapons cheat. +ShotFovX <degrees> shoots
+//				through the game's own field of view at that FovX instead.
 //
 // ----------------------------------------------------------------------- //
 
@@ -7371,9 +7373,24 @@ void CGameClientShell::UpdateShots()
 	g_pLTClient->SetObjectPos(m_hCamera, &pose.vPos);
 	g_pLTClient->SetObjectRotation(m_hCamera, &rRot);
 
-	uint32 nWidth, nHeight;
-	g_pLTClient->GetSurfaceDims(g_pLTClient->GetScreenSurface(), &nWidth, &nHeight);
-	SetCameraFOV(DEG2RAD(90.0f), 2.0f * (LTFLOAT)atan((double)nHeight / (double)nWidth));
+	// +ShotFovX <degrees> takes the shots through the field of view the game
+	// itself sets at that FovX: 90 is the normal view, 20, 7 and 2 the scope's
+	// zoom levels (FovY scaled with FovX, as UpdateCameraZoom does)...
+
+	HCONSOLEVAR hFovX = g_pLTClient->GetConsoleVar("ShotFovX");
+	LTFLOAT fShotFovX = hFovX ? g_pLTClient->GetVarValueFloat(hFovX) : 0.0f;
+	if (fShotFovX > 0.0f)
+	{
+		SetCameraFOV(DEG2RAD(fShotFovX),
+			(DEG2RAD(fShotFovX) * DEG2RAD(g_vtFOVYNormal.GetFloat())) / DEG2RAD(g_vtFOVXNormal.GetFloat()));
+	}
+	else
+	{
+		// Square pixels on any screen: the engine widens FovX by the screen's
+		// shape against 4:3 and takes FovY as it is...
+
+		SetCameraFOV(DEG2RAD(90.0f), 2.0f * (LTFLOAT)atan(0.75));
+	}
 
 	// UpdatePlaying() saves this frame once it's rendered...
 

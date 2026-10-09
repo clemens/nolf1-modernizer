@@ -372,6 +372,26 @@ void SetPlayerPosFn(int argc, char **argv)
 	}
 }
 
+// Fire [seconds]: holds the fire button down for that long in game time (none:
+// until the controls are next read, a single press), as the player's own fire
+// key does. For measuring with +DemoCmds; CMoveMgr reads it through DemoFiring()...
+
+static LTFLOAT	s_fDemoFireUntil	= -1.0f;	// game time the button is let go
+static LTBOOL	s_bDemoFirePressed	= LTFALSE;	// down until read once, however short the hold
+
+LTBOOL DemoFiring()
+{
+	LTBOOL bDown = s_bDemoFirePressed || g_pLTClient->GetGameTime() <= s_fDemoFireUntil;
+	s_bDemoFirePressed = LTFALSE;
+	return bDown;
+}
+
+void FireFn(int argc, char **argv)
+{
+	s_fDemoFireUntil = g_pLTClient->GetGameTime() + (argc > 0 ? (LTFLOAT)atof(argv[0]) : 0.0f);
+	s_bDemoFirePressed = LTTRUE;
+}
+
 void SavePoseFn(int argc, char **argv)
 {
 	if (g_pGameClientShell)
@@ -1575,6 +1595,7 @@ uint32 CGameClientShell::OnEngineInitialized(RMode *pMode, LTGUID *pAppGuid)
     g_pLTClient->RegisterConsoleProgram("Cheat", CheatFn);
     g_pLTClient->RegisterConsoleProgram("SavePose", SavePoseFn);
     g_pLTClient->RegisterConsoleProgram("SetPlayerPos", SetPlayerPosFn);
+    g_pLTClient->RegisterConsoleProgram("Fire", FireFn);
     g_pLTClient->RegisterConsoleProgram("Sunglass", SunglassFn);
     g_pLTClient->RegisterConsoleProgram("LeakFile", LeakFileFn);
 //  g_pLTClient->RegisterConsoleProgram("Connect", ConnectFn);
@@ -10384,7 +10405,7 @@ void CGameClientShell::UpdateDemoTools()
 	}
 
 	// +DemoCmds <file>: lines "<seconds> <console string>", each run at that game
-	// time in the world, in order (Cmd, Trigger, SetPlayerPos, cheats)...
+	// time in the world, in order (Cmd, Trigger, SetPlayerPos, Fire, cheats)...
 
 	HCONSOLEVAR hCmds = g_pLTClient->GetConsoleVar("DemoCmds");
 	char* pCmds = hCmds ? g_pLTClient->GetVarValueString(hCmds) : LTNULL;

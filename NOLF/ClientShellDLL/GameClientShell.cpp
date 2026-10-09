@@ -10354,7 +10354,8 @@ const char *CGameClientShell::GetDisconnectMsg()
 //	PURPOSE:	For running demos unattended: +DemoShotEvery <s> saves the
 //				frame as shown (HUD and subtitles too) every s seconds of game
 //				time in the first world entered (a later world's shots would
-//				get the same names), demoshot_<seconds>.bmp in the game directory;
+//				get the same names), demoshot_<seconds>.bmp in the game directory
+//				(demoshot_<seconds>_<milliseconds>.bmp when s isn't whole);
 //				+DemoQuit <s> quits after s seconds of game time in the world, so a recording ends
 //				cleanly; +DemoTrack <file> writes what the player sees and does
 //				(JSON lines), for replaying it in a port.
@@ -10370,8 +10371,18 @@ void CGameClientShell::UpdateDemoTools()
 	LTFLOAT fEvery = GetConsoleFloat("DemoShotEvery", 0.0f);
 	if (fEvery > 0.0f && s_nDemoWorlds == 1 && fTime >= fEvery * s_nDemoShot)
 	{
+		// A whole number of seconds apart: demoshot_<seconds>.bmp; less or a fraction:
+		// demoshot_<seconds>_<milliseconds>.bmp, so no shot takes another's name.
 		char szFile[64];
-		sprintf(szFile, "demoshot_%04d.bmp", (int)(fEvery * s_nDemoShot));
+		int nMs = (int)(fEvery * s_nDemoShot * 1000.0f + 0.5f);
+		if (fEvery == (LTFLOAT)(int)fEvery)
+		{
+			sprintf(szFile, "demoshot_%04d.bmp", nMs / 1000);
+		}
+		else
+		{
+			sprintf(szFile, "demoshot_%04d_%03d.bmp", nMs / 1000, nMs % 1000);
+		}
 		SaveScreenBmp(szFile);
 		s_nDemoShot++;
 	}

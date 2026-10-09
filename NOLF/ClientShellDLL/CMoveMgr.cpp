@@ -28,6 +28,8 @@
 #include "BankedList.h"
 #include "SDL.h"
 
+LTBOOL DemoFiring();	// GameClientShell.cpp, the Fire console command
+
 #define SPECTATOR_ACCELERATION			100000.0f
 #define MIN_ONGROUND_Y					-10000000.0f
 #define DEFAULT_WORLD_GRAVITY			-2000.0f
@@ -487,7 +489,7 @@ void CMoveMgr::UpdateNormalControlFlags()
 		m_dwControlFlags |= BC_CFLG_STRAFE_LEFT;
 	}
 
-	if (g_pLTClient->IsCommandOn(COMMAND_ID_FIRING))
+	if (g_pLTClient->IsCommandOn(COMMAND_ID_FIRING) || DemoFiring())
 	{
 		m_dwControlFlags |= BC_CFLG_FIRING;
 	}

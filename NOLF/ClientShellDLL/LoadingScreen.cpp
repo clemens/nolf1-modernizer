@@ -21,6 +21,8 @@
 extern CGameClientShell* g_pGameClientShell;
 extern ConsoleMgr* g_pConsoleMgr;
 
+void DemoLoadingShot(LTFLOAT fShown);	// GameClientShell.cpp, +DemoShotLoading
+
 
 CLoadingScreen::CLoadingScreen() :
 	m_eCurState(STATE_NONE),
@@ -505,6 +507,8 @@ LTBOOL CLoadingScreen::Update()
 	    g_pOptimizedRenderer->FillRect(hDestSurf,&rect,hShadeColor);
 	}
 
+	DemoLoadingShot(CWinUtil::GetTime() - m_fShowTime);
+
     g_pLTClient->FlipScreen(FLIPSCREEN_CANDRAWCONSOLE);
 
 	// Count it..
@@ -553,6 +557,7 @@ LTBOOL CLoadingScreen::Show(LTBOOL bRun)
 	
 	// Go into the right state..
 	m_eCurState = STATE_SHOW;
+	m_fShowTime = CWinUtil::GetTime();
 
 	// Update once so the screen's showing
 	Update();

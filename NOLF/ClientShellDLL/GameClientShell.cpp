@@ -12,6 +12,8 @@
 
 #include "stdafx.h"
 #include "BaseFolder.h"
+#include "BaseSelectionFolder.h"
+#include "FolderBriefing.h"
 #include "FolderCommands.h"
 #include "GameClientShell.h"
 #include "MsgIds.h"
@@ -752,6 +754,127 @@ static void GetPoseWorldName(const char* pWorld, char* pOut, int nLen)
 	{
 		pOut[i - 4] = 0;
 	}
+}
+
+// The name of the n-th shot every fEvery seconds: <prefix>_<seconds>.bmp, or
+// <prefix>_<seconds>_<milliseconds>.bmp when fEvery has a fraction, so no shot
+// takes another's name...
+
+static void DemoShotName(char* pOut, const char* pPrefix, LTFLOAT fEvery, int n)
+{
+	int nMs = (int)(fEvery * n * 1000.0f + 0.5f);
+	if (fEvery == (LTFLOAT)(int)fEvery)
+	{
+		sprintf(pOut, "%s_%04d.bmp", pPrefix, nMs / 1000);
+	}
+	else
+	{
+		sprintf(pOut, "%s_%04d_%03d.bmp", pPrefix, nMs / 1000, nMs % 1000);
+	}
+}
+
+// Folder <name> [mission]: opens an interface folder, by its layout.txt name
+// (FolderWeapons) or its number, as the menus do. With a mission (its number in
+// missions.txt) that mission is selected first, as choosing it in the mission
+// list does (CFolderNew::OnCommand): the briefing, objectives and outfitting
+// folders show it. At startup, +DemoFolder <name> opens the folder in place of
+// the title screen, with +DemoMission's mission, and then +DemoShotEvery <s>
+// saves the frame every s seconds of real time (demoshot_<seconds>.bmp, as in a
+// world) and +DemoQuit <s> quits after s seconds, while the interface shows a
+// folder...
+
+extern char s_aFolderTag[FOLDER_ID_UNASSIGNED+1][32];	// LayoutMgr.cpp
+
+static LTFLOAT	s_fDemoFolderTime	= -1.0f;	// real time +DemoFolder opened its folder, -1 without
+static int		s_nDemoFolderShot	= 0;
+
+static LTBOOL OpenFolder(const char* pName, int nMission)
+{
+	int nId = isdigit((unsigned char)pName[0]) ? atoi(pName) : FOLDER_ID_NONE;
+	for (int i = FOLDER_ID_MAIN; i < FOLDER_ID_UNASSIGNED && nId == FOLDER_ID_NONE; i++)
+	{
+		if (!stricmp(s_aFolderTag[i], pName)) nId = i;
+	}
+	CFolderMgr* pFolderMgr = g_pInterfaceMgr->GetFolderMgr();
+	if (nId <= FOLDER_ID_NONE || nId >= FOLDER_ID_UNASSIGNED || !pFolderMgr->GetFolderFromID((eFolderID)nId))
+	{
+		SDL_Log("Folder: no folder %s", pName);
+		return LTFALSE;
+	}
+	if (nMission >= 0)
+	{
+		if (!g_pMissionMgr->GetMission(nMission))
+		{
+			SDL_Log("Folder: no mission %d", nMission);
+			return LTFALSE;
+		}
+		g_pInterfaceMgr->GetMissionData()->NewMission(nMission);
+		g_pInterfaceMgr->GetPlayerStats()->PrepareInventory();
+		CFolderBriefing* pBriefing = (CFolderBriefing*)pFolderMgr->GetFolderFromID(FOLDER_ID_BRIEFING);
+		if (pBriefing) pBriefing->SetPostMission(LTFALSE);
+	}
+
+	// An outfitting folder shows what the ones before it chose, which each of them
+	// keeps as it is left (CFolderWeapons::OnFocus: SaveWeaponData): go through them
+	// first, as their Continue does (GetNextSelectionFolder)...
+
+	int nHelp;
+	for (eFolderID eFolder = FOLDER_ID_OBJECTIVES; nId > FOLDER_ID_OBJECTIVES && nId <= FOLDER_ID_INVENTORY &&
+		eFolder != FOLDER_ID_NONE && eFolder < nId; eFolder = GetNextSelectionFolder(eFolder, &nHelp))
+	{
+		g_pInterfaceMgr->SwitchToFolder(eFolder);
+	}
+	return g_pInterfaceMgr->SwitchToFolder((eFolderID)nId);
+}
+
+void FolderFn(int argc, char **argv)
+{
+	if (g_pInterfaceMgr && argc > 0)
+	{
+		OpenFolder(argv[0], argc > 1 ? atoi(argv[1]) : -1);
+	}
+}
+
+// +DemoFolder's shots and quit, in the frame just drawn (CGameClientShell::Update)...
+
+static void UpdateDemoFolder()
+{
+	if (s_fDemoFolderTime < 0.0f || g_pInterfaceMgr->GetGameState() != GS_FOLDER) return;
+	LTFLOAT fTime = CWinUtil::GetTime() - s_fDemoFolderTime;
+
+	LTFLOAT fEvery = GetConsoleFloat("DemoShotEvery", 0.0f);
+	if (fEvery > 0.0f && fTime >= fEvery * s_nDemoFolderShot)
+	{
+		char szFile[64];
+		DemoShotName(szFile, "demoshot", fEvery, s_nDemoFolderShot);
+		SaveScreenBmp(szFile);
+		s_nDemoFolderShot++;
+	}
+
+	LTFLOAT fQuit = GetConsoleFloat("DemoQuit", 0.0f);
+	if (fQuit > 0.0f && fTime >= fQuit)
+	{
+		g_pLTClient->Shutdown();
+	}
+}
+
+// +DemoShotLoading <s>: the loading screen's frame every s seconds of real time
+// from when it shows, while the first world loads (a later load's would get the
+// same names), loadshot_<seconds>.bmp in the game directory. CLoadingScreen::Update
+// calls it before its flip, from the loading thread after its first frame; the
+// first frame is drawn by Show, on the main thread, so the variable is read there...
+
+void DemoLoadingShot(LTFLOAT fShown)
+{
+	static LTFLOAT s_fEvery = -1.0f;
+	static int s_nLoadShot = 0;
+	if (s_fEvery < 0.0f) s_fEvery = GetConsoleFloat("DemoShotLoading", 0.0f);
+	if (s_fEvery <= 0.0f || s_nDemoWorlds > 0 || fShown < s_fEvery * s_nLoadShot) return;
+
+	char szFile[64];
+	DemoShotName(szFile, "loadshot", s_fEvery, s_nLoadShot);
+	SaveScreenBmp(szFile);
+	s_nLoadShot++;
 }
 
 void SunglassFn(int argc, char **argv)
@@ -1596,6 +1719,7 @@ uint32 CGameClientShell::OnEngineInitialized(RMode *pMode, LTGUID *pAppGuid)
     g_pLTClient->RegisterConsoleProgram("SavePose", SavePoseFn);
     g_pLTClient->RegisterConsoleProgram("SetPlayerPos", SetPlayerPosFn);
     g_pLTClient->RegisterConsoleProgram("Fire", FireFn);
+    g_pLTClient->RegisterConsoleProgram("Folder", FolderFn);
     g_pLTClient->RegisterConsoleProgram("Sunglass", SunglassFn);
     g_pLTClient->RegisterConsoleProgram("LeakFile", LeakFileFn);
 //  g_pLTClient->RegisterConsoleProgram("Connect", ConnectFn);
@@ -1870,7 +1994,22 @@ uint32 CGameClientShell::OnEngineInitialized(RMode *pMode, LTGUID *pAppGuid)
 		}
         s_bDemoOutfit = pDemoMission && nRunMission == nDemoMission && nRunLevel > 0;
 
-        if (pDemoMission)
+        // +DemoFolder <name> opens that folder instead, with +DemoMission's mission
+        // selected (see FolderFn)...
+
+        hVar = g_pLTClient->GetConsoleVar("DemoFolder");
+        char* pDemoFolder = hVar ? g_pLTClient->GetVarValueString(hVar) : LTNULL;
+
+        if (pDemoFolder && pDemoFolder[0])
+		{
+			if (!OpenFolder(pDemoFolder, nDemoMission))
+			{
+                g_pLTClient->ShutdownWithMessage("Can't open the folder");
+				return LT_ERROR;
+			}
+			s_fDemoFolderTime = CWinUtil::GetTime();
+		}
+        else if (pDemoMission)
 		{
 			if (pRecordDemo && pRecordDemo[0]) SAFE_STRCPY(s_szDemoRecordPending, pRecordDemo);
 			m_InterfaceMgr.GetMissionData()->NewMission(nDemoMission);
@@ -2442,6 +2581,8 @@ void CGameClientShell::Update()
 
 	if (m_InterfaceMgr.Update())
 	{
+		UpdateDemoFolder();
+
 		// Actually this is always on top
 		g_pConsoleMgr->Draw();
 
@@ -10371,18 +10512,8 @@ void CGameClientShell::UpdateDemoTools()
 	LTFLOAT fEvery = GetConsoleFloat("DemoShotEvery", 0.0f);
 	if (fEvery > 0.0f && s_nDemoWorlds == 1 && fTime >= fEvery * s_nDemoShot)
 	{
-		// A whole number of seconds apart: demoshot_<seconds>.bmp; less or a fraction:
-		// demoshot_<seconds>_<milliseconds>.bmp, so no shot takes another's name.
 		char szFile[64];
-		int nMs = (int)(fEvery * s_nDemoShot * 1000.0f + 0.5f);
-		if (fEvery == (LTFLOAT)(int)fEvery)
-		{
-			sprintf(szFile, "demoshot_%04d.bmp", nMs / 1000);
-		}
-		else
-		{
-			sprintf(szFile, "demoshot_%04d_%03d.bmp", nMs / 1000, nMs % 1000);
-		}
+		DemoShotName(szFile, "demoshot", fEvery, s_nDemoShot);
 		SaveScreenBmp(szFile);
 		s_nDemoShot++;
 	}

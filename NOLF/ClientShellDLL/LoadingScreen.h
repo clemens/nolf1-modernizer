@@ -117,6 +117,7 @@ private:
 
 	uint32 m_nFrameCounter; // Frame tracking
 	float m_fLastFrameTime, m_fCurFrameDelta;
+	float m_fShowTime;	// real time Show was called
 
 
 	//data for displaying what level is being loaded

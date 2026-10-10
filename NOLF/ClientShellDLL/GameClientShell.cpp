@@ -465,6 +465,57 @@ void DemoTrackItem(const char* pKind, const char* pName, int nCount)
 	fflush(pFile);
 }
 
+// A sound as it starts, for the +DemoTrack file: [game time, "sound", file,
+// PLAYSOUND_ flags, filter id it asked for, SoundFilters, the filter it was
+// given ("" for none), SetSoundFilter's result, the last failed
+// SetSoundFilterParam's (0 when all were taken; both -1 when not called)].
+// Only in a world...
+
+static void DemoTrackSound(PlaySoundInfo* pPSI, const char* pFilter, int nResult, int nParamResult)
+{
+	FILE* pFile = DemoTrackFile();
+	if (!pFile || !s_nDemoWorlds) return;
+	char szName[_MAX_PATH + 1];
+	SAFE_STRCPY(szName, pPSI->m_szSoundName);
+	for (char* p = szName; *p; p++)
+	{
+		if (*p == '\\' || *p == '"') *p = '/';
+	}
+	fprintf(pFile, "[%.4f,\"sound\",\"%s\",%u,%u,%d,\"%s\",%d,%d]\n", g_pLTClient->GetGameTime(), szName,
+		(unsigned)pPSI->m_dwFlags, (unsigned)pPSI->m_UserData, (int)g_vtUseSoundFilters.GetFloat(), pFilter,
+		nResult, nParamResult);
+	fflush(pFile);
+}
+
+// The filters the sound system has, for the +DemoTrack file as a world starts:
+// [game time, "filters", name, ...] (ILTClientSoundMgr::GetFilterName)...
+
+static void DemoTrackFilters()
+{
+	FILE* pFile = DemoTrackFile();
+	if (!pFile) return;
+	ILTClientSoundMgr *pSoundMgr = (ILTClientSoundMgr *)g_pLTClient->SoundMgr();
+	fprintf(pFile, "[%.4f,\"filters\"", g_pLTClient->GetGameTime());
+	const char* pName = LTNULL;
+	for (uint32 i = 0; i < 64 && pSoundMgr->GetFilterName(i, &pName) == LT_OK && pName; i++)
+	{
+		fprintf(pFile, ",\"%s\"", pName);
+	}
+	fprintf(pFile, "]\n");
+	fflush(pFile);
+}
+
+// The camera's container as it changes, for the +DemoTrack file: [game time,
+// "container", container code, the container's sound filter id]. Only in a world...
+
+static void DemoTrackContainer(int nCode, int nSoundFilterId)
+{
+	FILE* pFile = DemoTrackFile();
+	if (!pFile || !s_nDemoWorlds) return;
+	fprintf(pFile, "[%.4f,\"container\",%d,%d]\n", g_pLTClient->GetGameTime(), nCode, nSoundFilterId);
+	fflush(pFile);
+}
+
 // +DemoLoadout <file>: the mission data becomes the file's lines "<kind> <count> <name>"
 // (weapon, ammo, mod or gear by its weapons.txt name), e.g. what the player held at the
 // end of the world before. Without the file it stays the mission's default loadout...
@@ -2425,6 +2476,7 @@ void CGameClientShell::OnEnterWorld()
 		fprintf(pTrack, "{\"world\":\"%s\",\"t\":%.4f}\n", szWorld, g_pLTClient->GetGameTime());
 		fflush(pTrack);
 		s_fDemoTrackTime = -1.0f;
+		DemoTrackFilters();
 
 		// The weapons, mods and gear the player holds as the world starts (a mission's
 		// loadout comes from its mission data, CPlayerStats::Setup); the ammo follows
@@ -4623,6 +4675,7 @@ void CGameClientShell::UpdateContainerFX()
 
 		m_eCurContainerCode = eCode;
 		m_nSoundFilterId	= nSoundFilterId;
+		DemoTrackContainer(eCode, nSoundFilterId);
 
 		if (m_hContainerSound)
 		{
@@ -9179,7 +9232,12 @@ void CGameClientShell::OnModelKey(HLOCALOBJ hObj, ArgList *pArgs)
 
 void CGameClientShell::OnPlaySound(PlaySoundInfo* pPSI)
 {
-	if (!pPSI || !g_vtUseSoundFilters.GetFloat()) return;
+	if (!pPSI) return;
+	if (!g_vtUseSoundFilters.GetFloat())
+	{
+		DemoTrackSound(pPSI, "", -1, -1);
+		return;
+	}
 
 	SOUNDFILTER* pFilter = g_pSoundFilterMgr->GetFilter((uint8)pPSI->m_UserData);
 	if (!pFilter)
@@ -9207,18 +9265,25 @@ void CGameClientShell::OnPlaySound(PlaySoundInfo* pPSI)
 
 		// Some sounds are unfiltered...
 
-		if (g_pSoundFilterMgr->IsUnFiltered(pFilter)) return;
+		if (g_pSoundFilterMgr->IsUnFiltered(pFilter))
+		{
+			DemoTrackSound(pPSI, "", -1, -1);
+			return;
+		}
 
 
 		// Set up the filter
 
 		ILTClientSoundMgr *pSoundMgr = (ILTClientSoundMgr *)g_pLTClient->SoundMgr();
 
-		pSoundMgr->SetSoundFilter(pPSI->m_hSound, pFilter->szFilterName);
+		LTRESULT dwResult = pSoundMgr->SetSoundFilter(pPSI->m_hSound, pFilter->szFilterName);
+		LTRESULT dwParamResult = LT_OK;
 		for (int i=0; i < pFilter->nNumVars; i++)
 		{
-			pSoundMgr->SetSoundFilterParam(pPSI->m_hSound, pFilter->szVars[i], pFilter->fValues[i]);
+			LTRESULT dwSet = pSoundMgr->SetSoundFilterParam(pPSI->m_hSound, pFilter->szVars[i], pFilter->fValues[i]);
+			if (dwSet != LT_OK) dwParamResult = dwSet;
 		}
+		DemoTrackSound(pPSI, pFilter->szName, (int)dwResult, (int)dwParamResult);
 
 		// TEMP, let us test what filter is being used...
 		// g_pLTClient->CPrint("Using Filter: %s", pFilter->szName);

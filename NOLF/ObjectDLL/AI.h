@@ -213,6 +213,7 @@ class CAI : public CCharacter
 		virtual void Update();
 		virtual void PostUpdate();
 		void TrackUpdate();
+		void TrackAnim(const char* szKind, const char* szKey);
 
 		virtual void UpdateAnimation();
 		virtual void UpdateOnGround();

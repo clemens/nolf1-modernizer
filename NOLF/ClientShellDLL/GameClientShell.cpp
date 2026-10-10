@@ -10645,6 +10645,24 @@ void CGameClientShell::UpdateDemoTools()
 		g_pLTClient->FreeString(hstrCmd);
 	}
 
+	// AnimTrack 1, passed on the same way: the server's AIs write what their main
+	// animation tracker plays and each keyframe string (CAI::TrackAnim())...
+
+	static int s_nAnimTrack = 0;
+	int nAnimTrack = GetConsoleInt("AnimTrack", 0);
+	if (pTrack && nAnimTrack != s_nAnimTrack)
+	{
+		s_nAnimTrack = nAnimTrack;
+
+		char szBuffer[32];
+		sprintf(szBuffer, "AnimTrack %d", nAnimTrack);
+		HSTRING hstrCmd = g_pLTClient->CreateString(szBuffer);
+		HMESSAGEWRITE hMessage = g_pLTClient->StartMessage(MID_CONSOLE_COMMAND_CLIENT);
+		g_pLTClient->WriteToMessageHString(hMessage, hstrCmd);
+		g_pLTClient->EndMessage(hMessage);
+		g_pLTClient->FreeString(hstrCmd);
+	}
+
 	// +DemoCmds <file>: lines "<seconds> <console string>", each run at that game
 	// time in the world, in order (Cmd, Trigger, SetPlayerPos, Fire, cheats)...
 

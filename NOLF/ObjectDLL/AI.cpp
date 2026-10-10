@@ -28,6 +28,7 @@
 static CVarTrack g_SenseInfoTrack;
 static CVarTrack g_AccuracyInfoTrack;
 static CVarTrack g_AITrack;
+static CVarTrack g_AnimTrack;
 LTBOOL g_bAutoSaved = LTFALSE;
 
 // Define our properties (what is available in DEdit)...
@@ -486,6 +487,53 @@ void CAI::TrackUpdate()
 
 // ----------------------------------------------------------------------- //
 //
+//	ROUTINE:	CAI::TrackAnim
+//
+//	PURPOSE:	With the server's AnimTrack variable on, tell the client
+//				what this AI's main animation tracker plays, for the
+//				+DemoTrack file: an "anim" line after each update and a
+//				"key" line for each keyframe string as it arrives. After
+//				the kind: name, server time, the animation's index and
+//				name, where it is in it and its length (ms), the MS_
+//				playback flags, and for a key its string.
+//
+// ----------------------------------------------------------------------- //
+
+void CAI::TrackAnim(const char* szKind, const char* szKey)
+{
+	if ( !g_AnimTrack.IsInitted() )
+	{
+		g_AnimTrack.Init(g_pLTServer, "AnimTrack", LTNULL, 0.0f);
+	}
+
+	if ( g_AnimTrack.GetFloat(0.0f) == 0.0f ) return;
+
+	LTAnimTracker* pTracker = LTNULL;
+	if ( LT_OK != g_pModelLT->GetMainTracker(m_hObject, pTracker) || !pTracker ) return;
+
+	HMODELANIM hAni = INVALID_MODEL_ANIM;
+	uint32 dwTime = 0, dwLength = 0, dwFlags = 0;
+	g_pModelLT->GetCurAnim(pTracker, hAni);
+	g_pModelLT->GetCurAnimTime(pTracker, dwTime);
+	g_pModelLT->GetCurAnimLength(pTracker, dwLength);
+	g_pModelLT->GetPlaybackState(pTracker, dwFlags);
+
+	const char* szAni = g_pLTServer->GetAnimName(m_hObject, hAni);
+
+	char szLine[320];
+	sprintf(szLine, "\"%s\",\"%.64s\",%.4f,%d,\"%.48s\",%d,%d,%d,\"%.64s\"", szKind,
+		g_pLTServer->GetObjectName(m_hObject), g_pLTServer->GetTime(), (int)hAni,
+		szAni ? szAni : "", (int)dwTime, (int)dwLength, (int)dwFlags, szKey ? szKey : "");
+
+	HSTRING hstrLine = g_pLTServer->CreateString(szLine);
+	HMESSAGEWRITE hMessage = g_pLTServer->StartMessage(LTNULL, MID_AI_TRACK);
+	g_pLTServer->WriteToMessageHString(hMessage, hstrLine);
+	g_pLTServer->EndMessage(hMessage);
+	g_pLTServer->FreeString(hstrLine);
+}
+
+// ----------------------------------------------------------------------- //
+//
 //	ROUTINE:	CAI::EngineMessageFn
 //
 //	PURPOSE:	Handle engine messages
@@ -521,6 +569,8 @@ uint32 CAI::EngineMessageFn(uint32 messageID, void *pData, LTFLOAT fData)
 
 			Update();
 
+			TrackAnim("anim", LTNULL);
+
 			break;
 		}
 
@@ -532,6 +582,9 @@ uint32 CAI::EngineMessageFn(uint32 messageID, void *pData, LTFLOAT fData)
 
 		case MID_MODELSTRINGKEY:
 		{
+			ArgList* pArgList = (ArgList*)pData;
+			TrackAnim("key", pArgList && pArgList->argv && pArgList->argc > 0 ? pArgList->argv[0] : LTNULL);
+
 			HandleModelString((ArgList*)pData);
 			break;
 		}

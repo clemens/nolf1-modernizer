@@ -212,6 +212,7 @@ class CAI : public CCharacter
 		virtual void PreUpdate();
 		virtual void Update();
 		virtual void PostUpdate();
+		void TrackUpdate();
 
 		virtual void UpdateAnimation();
 		virtual void UpdateOnGround();
@@ -375,6 +376,11 @@ class CAI : public CCharacter
 
 		LTBOOL		m_bDeactivated;
 		LTBOOL		m_bReactivate;
+
+		// AITrack (not saved): the times of the last update and of the last line sent
+
+		LTFLOAT		m_fTrackUpdateTime;
+		LTFLOAT		m_fTrackLineTime;
 
 		// Group
 

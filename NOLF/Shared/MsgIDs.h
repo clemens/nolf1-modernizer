@@ -96,6 +96,8 @@
 #define MID_DISPLAY_METER				243	// Server to client						
 #define MID_FADEBODIES					244 // Client to server
 
+#define MID_AI_TRACK					246 // Server to client, see CAI::TrackUpdate()
+
 #define MID_HANDSHAKE					245 // Both ways, handshake negotiation
 // Handshake sub-messages
 	#define MID_HANDSHAKE_HELLO			0 // Hello! (version verification)  Both ways

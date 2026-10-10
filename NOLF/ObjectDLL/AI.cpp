@@ -27,6 +27,7 @@
 
 static CVarTrack g_SenseInfoTrack;
 static CVarTrack g_AccuracyInfoTrack;
+static CVarTrack g_AITrack;
 LTBOOL g_bAutoSaved = LTFALSE;
 
 // Define our properties (what is available in DEdit)...
@@ -373,6 +374,9 @@ CAI::CAI() : CCharacter()
 	m_bDeactivated = LTFALSE;
 	m_bReactivate = LTFALSE;
 
+	m_fTrackUpdateTime = -1.0f;
+	m_fTrackLineTime = -1.0f;
+
 	// Debug level
 
 	m_nDebugLevel = 0;
@@ -434,6 +438,54 @@ void CAI::ComputeSquares()
 
 // ----------------------------------------------------------------------- //
 //
+//	ROUTINE:	CAI::TrackUpdate
+//
+//	PURPOSE:	With the server's AITrack variable on, tell the client
+//				when this AI is updated, for the +DemoTrack file: an "ai"
+//				line each second it is, and an "aigap" line for an update
+//				that comes more than a quarter second after the last one
+//				(a frame is 0.2 s at most, so it was not updated in
+//				between). After the kind: name, time of the last update
+//				and of this one (server time), position, m_bDeactivated,
+//				m_bReactivate, the engine's object state.
+//
+// ----------------------------------------------------------------------- //
+
+void CAI::TrackUpdate()
+{
+	if ( !g_AITrack.IsInitted() )
+	{
+		g_AITrack.Init(g_pLTServer, "AITrack", LTNULL, 0.0f);
+	}
+
+	LTFLOAT fTime = g_pLTServer->GetTime();
+	LTFLOAT fLastTime = m_fTrackUpdateTime;
+	m_fTrackUpdateTime = fTime;
+
+	if ( g_AITrack.GetFloat(0.0f) == 0.0f ) return;
+
+	LTBOOL bGap = fLastTime >= 0.0f && fTime > fLastTime + 0.25f;
+	if ( !bGap && fTime < m_fTrackLineTime + 1.0f ) return;
+
+	m_fTrackLineTime = fTime;
+
+	LTVector vPos;
+	g_pLTServer->GetObjectPos(m_hObject, &vPos);
+
+	char szLine[256];
+	sprintf(szLine, "\"%s\",\"%.64s\",%.4f,%.4f,%.2f,%.2f,%.2f,%d,%d,%d", bGap ? "aigap" : "ai",
+		g_pLTServer->GetObjectName(m_hObject), fLastTime, fTime, vPos.x, vPos.y, vPos.z,
+		m_bDeactivated ? 1 : 0, m_bReactivate ? 1 : 0, g_pLTServer->GetObjectState(m_hObject));
+
+	HSTRING hstrLine = g_pLTServer->CreateString(szLine);
+	HMESSAGEWRITE hMessage = g_pLTServer->StartMessage(LTNULL, MID_AI_TRACK);
+	g_pLTServer->WriteToMessageHString(hMessage, hstrLine);
+	g_pLTServer->EndMessage(hMessage);
+	g_pLTServer->FreeString(hstrLine);
+}
+
+// ----------------------------------------------------------------------- //
+//
 //	ROUTINE:	CAI::EngineMessageFn
 //
 //	PURPOSE:	Handle engine messages
@@ -447,6 +499,8 @@ uint32 CAI::EngineMessageFn(uint32 messageID, void *pData, LTFLOAT fData)
 		case MID_UPDATE:
 		{
 			g_pLTServer->SetNextUpdate(m_hObject, c_fUpdateDelta);
+
+			TrackUpdate();
 
 			if ( m_bReactivate )
 			{

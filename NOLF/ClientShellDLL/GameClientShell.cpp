@@ -5842,6 +5842,21 @@ void CGameClientShell::OnMessage(uint8 messageID, HMESSAGEREAD hMessage)
 		}
 		break;
 
+		case MID_AI_TRACK :
+		{
+			// An AI's update, for the +DemoTrack file (AITrack 1, CAI::TrackUpdate())...
+
+			HSTRING hstrLine = g_pLTClient->ReadFromMessageHString(hMessage);
+			FILE* pFile = DemoTrackFile();
+			if (pFile && hstrLine)
+			{
+				fprintf(pFile, "[%.4f,%s]\n", g_pLTClient->GetGameTime(), g_pLTClient->GetStringData(hstrLine));
+				fflush(pFile);
+			}
+			if (hstrLine) g_pLTClient->FreeString(hstrLine);
+		}
+		break;
+
 		default : break;
 	}
 }
@@ -10609,6 +10624,25 @@ void CGameClientShell::UpdateDemoTools()
 			vCam.x, vCam.y, vCam.z, RAD2DEG(m_fPitch), RAD2DEG(m_fYaw), m_bUsingExternalCamera ? 1 : 0,
 			vObj.x, vObj.y, vObj.z);
 		fflush(pTrack);
+	}
+
+	// AITrack 1 (a console variable, so also a +DemoCmds line): the server's AIs
+	// write when they are updated to the +DemoTrack file (CAI::TrackUpdate()). The
+	// server has its own variables, so pass a change on...
+
+	static int s_nAITrack = 0;
+	int nAITrack = GetConsoleInt("AITrack", 0);
+	if (pTrack && nAITrack != s_nAITrack)
+	{
+		s_nAITrack = nAITrack;
+
+		char szBuffer[32];
+		sprintf(szBuffer, "AITrack %d", nAITrack);
+		HSTRING hstrCmd = g_pLTClient->CreateString(szBuffer);
+		HMESSAGEWRITE hMessage = g_pLTClient->StartMessage(MID_CONSOLE_COMMAND_CLIENT);
+		g_pLTClient->WriteToMessageHString(hMessage, hstrCmd);
+		g_pLTClient->EndMessage(hMessage);
+		g_pLTClient->FreeString(hstrCmd);
 	}
 
 	// +DemoCmds <file>: lines "<seconds> <console string>", each run at that game
